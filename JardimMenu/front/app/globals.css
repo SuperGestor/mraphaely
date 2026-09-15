@@ -1,0 +1,143 @@
+@import "tailwindcss";
+
+/* Tokens do docs/design-system.json. Só os visuais (T8): o passo de validação, o
+   cartãozinho e as larguras de celular do arquivo não valem mais.
+   As cores da loja entram por CSS variables, então trocar a cor muda o produto
+   inteiro, sem redeploy (JM-009). */
+:root {
+  /* configurável por loja */
+  --jm-primary: #2f3927;
+  --jm-accent: #5a6b4a;
+
+  /* fixos */
+  --jm-canvas: #f6f6f3;
+  --jm-surface: #ffffff;
+  --jm-ink: #1f2937;
+  /* O #6b7280 do design-system.json dá 4,2:1 sobre o fundo e reprova no AA (NF-007).
+     Escurecido para 5,1:1. A correção precisa voltar para o design-system. */
+  --jm-muted: #5a6472;
+  --jm-line: #e7e8e4;
+  --jm-danger: #ef4444;
+  --jm-success: #22c55e;
+
+  --jm-radius-card: 18px;
+  --jm-radius-modal: 16px;
+  --jm-radius-input: 12px;
+  --jm-sidebar: 220px;
+
+  --jm-shadow-card: 0 1px 4px rgb(0 0 0 / 0.05);
+  --jm-shadow-hero: 0 6px 18px rgb(17 24 39 / 0.14);
+  --jm-shadow-float: 0 8px 22px rgb(17 24 39 / 0.13);
+}
+
+@theme inline {
+  --color-primary: var(--jm-primary);
+  --color-accent: var(--jm-accent);
+  --color-canvas: var(--jm-canvas);
+  --color-surface: var(--jm-surface);
+  --color-ink: var(--jm-ink);
+  --color-muted: var(--jm-muted);
+  --color-line: var(--jm-line);
+  --color-danger: var(--jm-danger);
+  --color-success: var(--jm-success);
+
+  --radius-card: var(--jm-radius-card);
+  --radius-modal: var(--jm-radius-modal);
+  --radius-input: var(--jm-radius-input);
+
+  --shadow-card: var(--jm-shadow-card);
+  --shadow-hero: var(--jm-shadow-hero);
+  --shadow-float: var(--jm-shadow-float);
+
+  --font-sans: ui-sans-serif, system-ui, -apple-system, "Segoe UI", Roboto, Arial, sans-serif;
+}
+
+html,
+body {
+  height: 100%;
+}
+
+body {
+  background: var(--jm-canvas);
+  color: var(--jm-ink);
+  font-family: var(--font-sans);
+}
+
+/* O tablet roda em navegador kiosk: sem seleção de texto, sem zoom por gesto e sem
+   rolagem elástica. Vale só na tela do cliente (JM-181). */
+.jm-kiosk {
+  user-select: none;
+  touch-action: manipulation;
+  overscroll-behavior: none;
+}
+
+/* 44px é o mínimo, e aqui pesa mais que em celular: o aparelho é usado em pé, na
+   mesa, por gente com as mãos ocupadas (NF-007). */
+.jm-touch {
+  min-height: 44px;
+  min-width: 44px;
+}
+
+/* Foco visível, porque o kiosk também é operado por quem usa leitor de tela. */
+.jm-focus:focus-visible {
+  outline: 3px solid var(--jm-accent);
+  outline-offset: 2px;
+}
+
+/* Ken Burns do design system: 16s, escala 1.02 a 1.18, animando só transform.
+   Três variantes, alternadas por posição do card, para o movimento não sincronizar. */
+@keyframes jm-ken-a {
+  from { transform: scale(1.02); }
+  to { transform: scale(1.16) translate(-2.5%, 1.5%); }
+}
+@keyframes jm-ken-b {
+  from { transform: scale(1.16) translate(2%, -1.5%); }
+  to { transform: scale(1.02); }
+}
+@keyframes jm-ken-c {
+  from { transform: scale(1.05) translate(0, 2%); }
+  to { transform: scale(1.18) translate(1.5%, -2%); }
+}
+
+.jm-ken-a,
+.jm-ken-b,
+.jm-ken-c {
+  will-change: transform;
+  animation-duration: 16s;
+  animation-timing-function: ease-in-out;
+  animation-iteration-count: infinite;
+  animation-direction: alternate;
+}
+.jm-ken-a { animation-name: jm-ken-a; }
+.jm-ken-b { animation-name: jm-ken-b; }
+.jm-ken-c { animation-name: jm-ken-c; }
+
+@media (prefers-reduced-motion: reduce) {
+  .jm-ken-a,
+  .jm-ken-b,
+  .jm-ken-c {
+    animation: none;
+  }
+}
+
+/* Esqueleto de carregamento. Nunca spinner solto. */
+@keyframes jm-pulse {
+  0%, 100% { opacity: 1; }
+  50% { opacity: 0.45; }
+}
+.jm-skeleton {
+  background: color-mix(in oklab, var(--jm-line) 70%, white);
+  animation: jm-pulse 1.4s ease-in-out infinite;
+}
+@media (prefers-reduced-motion: reduce) {
+  .jm-skeleton { animation: none; }
+}
+
+/* Rolagem horizontal sem barra visível (pílulas de categoria e vitrine). No celular a
+   barra já some sozinha; numa janela estreita de computador ela ocupava espaço e poluía. */
+.jm-sem-barra {
+  scrollbar-width: none;
+}
+.jm-sem-barra::-webkit-scrollbar {
+  display: none;
+}

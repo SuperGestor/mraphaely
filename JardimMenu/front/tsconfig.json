@@ -1,0 +1,62 @@
+{
+  "compilerOptions": {
+    "target": "ES2017",
+    "lib": [
+      "dom",
+      "dom.iterable",
+      "esnext"
+    ],
+    "allowJs": true,
+    "skipLibCheck": true,
+    "strict": true,
+    "noEmit": true,
+    "esModuleInterop": true,
+    "module": "esnext",
+    "moduleResolution": "bundler",
+    "resolveJsonModule": true,
+    "isolatedModules": true,
+    "jsx": "preserve",
+    "incremental": true,
+    "plugins": [
+      {
+        "name": "next"
+      }
+    ],
+    "paths": {
+      "@/*": [
+        "./*"
+      ],
+      "@back/*": [
+        "../back/*"
+      ],
+      "zod": [
+        "./node_modules/zod"
+      ],
+      "@supabase/ssr": [
+        "./node_modules/@supabase/ssr"
+      ],
+      "@supabase/supabase-js": [
+        "./node_modules/@supabase/supabase-js"
+      ],
+      "next/headers": [
+        "./node_modules/next/headers"
+      ],
+      "qrcode": [
+        "./node_modules/@types/qrcode"
+      ],
+      "sharp": [
+        "./node_modules/sharp"
+      ]
+    }
+  },
+  "include": [
+    "next-env.d.ts",
+    "**/*.ts",
+    "**/*.tsx",
+    ".next/types/**/*.ts",
+    "../back/**/*.ts"
+  ],
+  "exclude": [
+    "node_modules"
+  ]
+}
