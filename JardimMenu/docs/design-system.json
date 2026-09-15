@@ -1,0 +1,345 @@
+{
+  "meta": {
+    "projeto": "Jardim Menu",
+    "artefato": "Design System e Regras de Layout",
+    "versao": "2.0",
+    "data": "2026-09-08",
+    "complementa": "docs/ESPECIFICACAO-TECNICA.md",
+    "prototipoVisual": "proposta-layout-v2-jardim-menu.html",
+    "descricao": "Especificacao de layout, tema white-label, movimento de fotos e regras adaptativas para todos os canais (mesa celular, mesa tablet, delivery celular/computador)."
+  },
+  "theme": {
+    "descricao": "Tokens configuraveis pelo dono da loja no admin. Todo o restante do sistema deriva destes valores via CSS variables.",
+    "configuravelPorLoja": {
+      "primaryColor": {
+        "tipo": "hex",
+        "exemplo": "#2f3927",
+        "uso": [
+          "sidebar",
+          "botoes primarios",
+          "categorias ativas",
+          "barra do carrinho",
+          "titulos de secao"
+        ]
+      },
+      "accentColor": {
+        "tipo": "hex",
+        "exemplo": "#5a6b4a",
+        "uso": [
+          "precos",
+          "detalhes secundarios"
+        ]
+      },
+      "storeName": {
+        "tipo": "string",
+        "maxLength": 22
+      },
+      "logoUrl": {
+        "tipo": "url",
+        "fallback": "avatar circular com iniciais do nome sobre primaryColor"
+      },
+      "bannerUrl": {
+        "tipo": "url",
+        "uso": "hero do delivery",
+        "fallback": "foto de produto destaque com veu escuro"
+      }
+    },
+    "presetsSugeridos": [
+      {
+        "nome": "Jardim",
+        "primary": "#2f3927",
+        "accent": "#5a6b4a"
+      },
+      {
+        "nome": "Parrilla",
+        "primary": "#7c2d12",
+        "accent": "#c2410c"
+      },
+      {
+        "nome": "Marinho",
+        "primary": "#1e3a5f",
+        "accent": "#2e6da4"
+      },
+      {
+        "nome": "Vinho",
+        "primary": "#581c37",
+        "accent": "#9d2f5c"
+      },
+      {
+        "nome": "Burger",
+        "primary": "#111827",
+        "accent": "#b45309"
+      }
+    ],
+    "tokensFixos": {
+      "background": "#f6f6f3",
+      "surface": "#ffffff",
+      "textPrimary": "#1f2937",
+      "textMuted": "#5a6472",
+      "border": "#e7e8e4",
+      "danger": "#ef4444",
+      "success": "#22c55e",
+      "radius": {
+        "card": 18,
+        "pill": 999,
+        "modal": 16,
+        "input": 12
+      },
+      "shadow": {
+        "card": "0 1px 4px rgba(0,0,0,.05)",
+        "heroCard": "0 6px 18px rgba(17,24,39,.14)",
+        "floating": "0 8px 22px rgba(17,24,39,.13)"
+      },
+      "textMutedNota": "Era #6b7280, que dá 4,2:1 sobre o fundo #f6f6f3 e reprova o AA do NF-007. Corrigido para 5,1:1 em 14/09/2026, verificado com axe-core."
+    },
+    "validacoesNoAdmin": [
+      "Contraste primaryColor x branco >= WCAG AA (4.5:1) para texto sobre a cor",
+      "Avisar quando primary e accent forem muito proximas (deltaE baixo)"
+    ]
+  },
+  "motion": {
+    "descricao": "Fotos estaticas com movimento lento (efeito Ken Burns) para sensacao de video com custo de imagem.",
+    "kenBurns": {
+      "duracaoSegundos": 16,
+      "easing": "ease-in-out",
+      "loop": "infinite alternate",
+      "escalaMin": 1.02,
+      "escalaMax": 1.18,
+      "translacaoMaxPercent": 2.5,
+      "variantes": [
+        {
+          "id": "A",
+          "de": "scale(1.02)",
+          "para": "scale(1.16) translate(-2.5%, 1.5%)"
+        },
+        {
+          "id": "B",
+          "de": "scale(1.16) translate(2%, -1.5%)",
+          "para": "scale(1.02)"
+        },
+        {
+          "id": "C",
+          "de": "scale(1.05) translate(0, 2%)",
+          "para": "scale(1.18) translate(1.5%, -2%)"
+        }
+      ],
+      "distribuicao": "alternar variantes A/B/C por posicao do card (i % 3) para evitar movimento sincronizado",
+      "performance": [
+        "animar apenas transform",
+        "will-change: transform",
+        "pausar animacoes fora do viewport via IntersectionObserver quando houver mais de 20 cards"
+      ]
+    },
+    "acessibilidade": {
+      "prefersReducedMotion": "desligar toda animacao de foto (imagem estatica)"
+    },
+    "outrasAnimacoes": {
+      "botaoAdicionar": "scale(0.85) no toque, 120ms",
+      "chamadoGarcom": "transicao de cor do botao entre estados, 200ms",
+      "proibido": "animacoes de entrada em cascata por secao; movimento que nao responde a acao do usuario, exceto Ken Burns"
+    }
+  },
+  "adaptiveLayout": {
+    "descricao": "Uma unica UI que se adapta por orientacao e largura. Sem versoes separadas, sem configuracao pela casa.",
+    "deteccao": {
+      "orientacao": "CSS media query (orientation: landscape / portrait)",
+      "larguras": {
+        "phone": "< 640px",
+        "tablet": "640-1023px",
+        "desktop": ">= 1024px"
+      }
+    },
+    "matriz": [
+      {
+        "cenario": "celular em pe (mesa e delivery)",
+        "categorias": "pills no topo com scroll horizontal",
+        "colunasGrade": 1,
+        "carrinho": "barra inferior fixa",
+        "sidebar": false
+      },
+      {
+        "cenario": "celular deitado (mesa)",
+        "categorias": "sidebar esquerda",
+        "colunasGrade": 2,
+        "carrinho": "barra inferior deslocada pela sidebar",
+        "sidebar": true
+      },
+      {
+        "cenario": "tablet em pe",
+        "categorias": "pills no topo",
+        "colunasGrade": 2,
+        "carrinho": "barra inferior fixa",
+        "sidebar": false
+      },
+      {
+        "cenario": "tablet deitado (mesa/kiosk)",
+        "categorias": "sidebar esquerda com logo, nome e mesa",
+        "colunasGrade": 2,
+        "carrinho": "barra inferior deslocada pela sidebar",
+        "sidebar": true,
+        "sidebarLarguraPx": 220
+      },
+      {
+        "cenario": "computador (delivery)",
+        "categorias": "pills no topo ou sidebar (a definir no teste de usabilidade)",
+        "colunasGrade": 3,
+        "carrinho": "painel lateral direito fixo, sempre visivel, larguraPx 250-320",
+        "sidebar": false
+      }
+    ],
+    "regrasGerais": [
+      "Delivery nunca mostra botao de garcom",
+      "Sidebar da mesa em paisagem: logo + nome + numero da mesa + categorias verticais",
+      "Reset de sessao do tablet kiosk: 15s apos enviar pedido ou 3min de inatividade"
+    ]
+  },
+  "components": {
+    "header": {
+      "conteudoRetrato": [
+        "logo pequena",
+        "nome da loja",
+        "contexto (Mesa N ou Delivery)",
+        "botao garcom (so mesa)",
+        "icone carrinho com badge"
+      ],
+      "conteudoPaisagemMesa": [
+        "titulo Cardapio",
+        "botao garcom",
+        "icone carrinho"
+      ],
+      "comportamento": "sticky com blur leve e sombra sutil"
+    },
+    "destaquesCarousel": {
+      "descricao": "Vitrine no topo do cardapio com fotos grandes em movimento",
+      "cardLarguraPx": 240,
+      "cardAlturaPx": 150,
+      "conteudo": [
+        "foto Ken Burns",
+        "veu gradiente escuro inferior",
+        "selo opcional (Mais pedido, Chef indica, Novo)",
+        "nome + preco sobre a foto"
+      ],
+      "fonteDosItens": "produtos marcados is_featured no admin; sugestao automatica: campeoes de conversao do painel de inteligencia",
+      "maxItens": 6,
+      "toque": "abre o modal do produto"
+    },
+    "productCard": {
+      "layoutGrade": {
+        "fotoAlturaPx": 128,
+        "foto": "Ken Burns",
+        "corpo": [
+          "nome",
+          "descricao 2 linhas com ellipsis",
+          "preco",
+          "botao circular +"
+        ]
+      },
+      "semFoto": "placeholder com gradiente da paleta + emoji do produto (configuravel), nunca quadrado cinza",
+      "toqueNaFoto": "abre modal do produto",
+      "produtoComComplementos": "botao + abre o modal de personalizacao (grupos, quantidade, observacao)"
+    },
+    "cartBar": {
+      "posicao": "inferior fixa",
+      "conteudo": [
+        "quantidade de itens",
+        "total",
+        "botao Ver pedido"
+      ],
+      "corFundo": "primaryColor"
+    },
+    "cartSidebarDesktop": {
+      "posicao": "direita fixa",
+      "conteudo": [
+        "lista de itens",
+        "total",
+        "botao Finalizar pedido"
+      ],
+      "estadoVazio": "Seu carrinho esta vazio. Adicione itens do cardapio."
+    },
+    "waiterButton": {
+      "estados": [
+        {
+          "id": "idle",
+          "label": "Garcom",
+          "estilo": "ambar"
+        },
+        {
+          "id": "sending",
+          "label": "Chamando...",
+          "estilo": "ambar"
+        },
+        {
+          "id": "received",
+          "label": "Chamado recebido",
+          "estilo": "azul",
+          "banner": "Chamado recebido pela equipe. Aguarde um instante."
+        },
+        {
+          "id": "attended",
+          "label": "Garcom a caminho",
+          "estilo": "verde",
+          "banner": "Chamado atendido. O garcom esta a caminho da mesa N."
+        },
+        {
+          "id": "error",
+          "label": "Tente de novo",
+          "estilo": "vermelho"
+        }
+      ],
+      "transicoes": "received -> attended via Realtime quando o garcom atende; attended -> idle apos 12s"
+    },
+    "validationStep": {
+      "descricao": "Passo final do pedido na mesa, conforme secao 5 da especificacao tecnica",
+      "metodos": [
+        "qr_card (camera)",
+        "nfc (tablet Android)",
+        "code (digitado, fallback universal)",
+        "none"
+      ],
+      "ui": "quando mais de um metodo viavel, mostrar opcoes lado a lado; feedback aceito/negado em < 500ms com som no tablet"
+    },
+    "productModal": {
+      "conteudo": [
+        "foto Ken Burns grande (opcional)",
+        "nome + preco base",
+        "descricao",
+        "grupos de complementos (radio se maxSelect=1, checkbox ate o limite)",
+        "badge Obrigatorio/Ate N",
+        "observacoes max 140",
+        "stepper de quantidade",
+        "botao Adicionar com total dinamico"
+      ],
+      "travas": "grupo obrigatorio nao atendido desabilita o botao e mostra qual falta"
+    }
+  },
+  "assets": {
+    "fotosDeProduto": {
+      "armazenamento": "Supabase Storage com CDN (nunca hotlink externo em producao)",
+      "resolucaoMinima": "800px no menor lado",
+      "proporcaoRecomendada": "4:3 ou 1:1, corte central",
+      "formatos": [
+        "webp preferencial",
+        "jpg aceito com conversao no upload"
+      ],
+      "pesoMaximoKb": 400,
+      "validacaoNoUpload": "recusar abaixo da resolucao minima; foto ruim em movimento amplifica o defeito",
+      "lazyLoading": true
+    },
+    "qrCodes": {
+      "plaquinhaMesa": "URL do cardapio com qr_token",
+      "cartaozinho": "apenas o codigo de validacao, nunca URL"
+    }
+  },
+  "accessibility": {
+    "alvoDeToqueMinPx": 44,
+    "contraste": "AA em todos os textos, validado no admin ao escolher cores",
+    "reducedMotion": "respeitado (fotos estaticas)",
+    "altText": "nome do produto em toda foto",
+    "fontes": "escala em rem, respeita zoom do sistema"
+  },
+  "pendenciasDeDecisao": [
+    "Intensidade do Ken Burns: manter escala 1.02-1.18 ou reduzir para 1.02-1.10 (aguardando feedback do teste visual)",
+    "Desktop delivery: categorias em pills no topo ou sidebar esquerda (teste de usabilidade)",
+    "Selo dos destaques: manual no admin, automatico via inteligencia, ou hibrido"
+  ]
+}
