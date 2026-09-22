@@ -6,8 +6,8 @@
  * este arquivo, e o domínio vem de variável de ambiente por ambiente.
  *
  * Atenção de calendário: o `device_token` do tablet fica no armazenamento local, que é
- * por origem, e o QR de configuração carrega a URL. Trocar o domínio depois de
- * provisionar obriga a reprovisionar todos os tablets (§14, A1).
+ * por origem, e o tablet é pareado em /[loja]/tablet/setup naquela origem. Trocar o
+ * domínio depois de parear obriga a parear de novo todos os tablets (§14, A1).
  */
 export const brand = {
   /** Provisório até a A1. */

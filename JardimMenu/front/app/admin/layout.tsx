@@ -19,6 +19,8 @@ export const metadata: Metadata = { title: "Configuração" };
 
 const secoes: SecaoDoAdmin[] = [
   { href: "/admin", rotulo: "Resumo", sigla: "Re" },
+  // A tela do turno (JM-121) fica fora do painel, em /equipe; o link é só atalho.
+  { href: "/equipe", rotulo: "Salão (equipe)", sigla: "Sa" },
   { href: "/admin/previa", rotulo: "Prévia do cliente", sigla: "Pv" },
   { href: "/admin/cardapio", rotulo: "Cardápio", sigla: "Ca" },
   { href: "/admin/complementos", rotulo: "Complementos", sigla: "Co" },

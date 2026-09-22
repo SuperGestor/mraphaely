@@ -1,17 +1,19 @@
 "use client";
 
 import { useCallback, useEffect, useState } from "react";
-import type { DeviceRow, TableRow as Mesa } from "@/lib/types";
+import type { DeviceRow, TabMode, TableRow as Mesa } from "@/lib/types";
 import { mensagemDe } from "@/lib/admin-source";
 import { useAdmin } from "@/components/admin/AdminContext";
 import { Badge, Button, Cell, Field, Hint, PageHeader, Panel, Row, Switch, Table, TextInput } from "@/components/admin/ui";
+import { DialogoDeConfirmacao, DialogoDeMotivo } from "@/components/equipe/Dialogos";
 
 /**
  * Mesas (JM-051). A mesa criada aqui pode receber um dispositivo (JM-180). Não há QR de
  * plaquinha: isso é do Módulo O, na Fase C (D21).
  *
- * Desligar o pedido de uma mesa (JM-186) é da Fase B, junto com a tela da equipe, e não
- * tem gravação nesta etapa: a tela mostra o estado e não oferece o interruptor.
+ * Fase B: o modo de comanda da loja (JM-200) e a contingência por mesa (JM-186), os dois
+ * só do dono e do gestor. A contingência também está na tela da equipe, onde ela é usada
+ * no turno; aqui ela aparece junto do cadastro da mesa.
  */
 export default function AdminMesas() {
   const { source, loja, gestor } = useAdmin();
@@ -20,12 +22,16 @@ export default function AdminMesas() {
   const [erro, setErro] = useState<string | null>(null);
   const [aviso, setAviso] = useState<string | null>(null);
   const [nova, setNova] = useState({ number: "", label: "" });
+  const [modo, setModo] = useState<TabMode | null>(null);
+  const [pausando, setPausando] = useState<Mesa | null>(null);
+  const [retomando, setRetomando] = useState<Mesa | null>(null);
 
   const carregar = useCallback(() => {
-    Promise.all([source.mesas(loja.store_id), source.dispositivos(loja.store_id)])
-      .then(([m, d]) => {
+    Promise.all([source.mesas(loja.store_id), source.dispositivos(loja.store_id), source.loja(loja.store_id)])
+      .then(([m, d, l]) => {
         setMesas(m);
         setDispositivos(d);
+        setModo(l.tab_mode);
       })
       .catch((e: unknown) => setErro(mensagemDe(e)));
   }, [source, loja.store_id]);
@@ -77,6 +83,23 @@ export default function AdminMesas() {
     if (ok) setNova({ number: "", label: "" });
   }
 
+  function trocarModo(novo: TabMode) {
+    if (novo === modo) return;
+    void executar(
+      () => source.rpc("admin_set_tab_mode", { p_store_id: loja.store_id, p_mode: novo }),
+      novo === "nomeada"
+        ? "Comanda com nome ligada. Vale para as próximas mesas abertas."
+        : "Comanda única ligada. Vale para as próximas mesas abertas.",
+    );
+  }
+
+  /** Contingência (JM-186): lança a recusa do banco para o diálogo mostrar. */
+  async function contingencia(m: Mesa, pedindo: boolean, motivo: string | null) {
+    await source.rpc("staff_set_table_ordering", { p_table_id: m.id, p_enabled: pedindo, p_reason: motivo });
+    setAviso(pedindo ? `Mesa ${m.number} voltou a pedir pelo tablet.` : `Pedido da mesa ${m.number} pausado.`);
+    carregar();
+  }
+
   const tabletDa = (mesaId: string) => dispositivos.find((d) => d.table_id === mesaId && d.status === "active") ?? null;
 
   return (
@@ -107,12 +130,38 @@ export default function AdminMesas() {
         </Panel>
       ) : null}
 
-      <Hint>
-        Desligar o pedido de uma mesa (contingência, JM-186) entra na Fase B, com a tela da equipe. Até lá, todo
-        tablet pareado e ativo mostra o cardápio normalmente.
-      </Hint>
-
-      <div className="h-4" />
+      <Panel
+        titulo="Comandas"
+        descricao="Como a conta se divide na mesa. A troca vale para as próximas mesas abertas; a mesa que já está aberta segue no modo em que abriu."
+      >
+        {modo === null ? (
+          <p className="text-muted">Carregando…</p>
+        ) : (
+          <div className="grid gap-3 sm:grid-cols-2" role="radiogroup" aria-label="Modo de comanda">
+            {(
+              [
+                ["mesa_unica", "Uma conta por mesa", "O cliente nunca vê a palavra comanda. É o padrão."],
+                ["nomeada", "Comanda com nome", "Cada pessoa abre a sua comanda no tablet, e a conta sai separada."],
+              ] as const
+            ).map(([valor, titulo, texto]) => (
+              <button
+                key={valor}
+                type="button"
+                role="radio"
+                aria-checked={modo === valor}
+                disabled={!gestor}
+                onClick={() => trocarModo(valor)}
+                className={`jm-focus rounded-input border-2 p-4 text-left disabled:opacity-60 ${
+                  modo === valor ? "border-primary bg-canvas" : "border-line bg-surface"
+                }`}
+              >
+                <span className="block text-base font-bold">{titulo}</span>
+                <span className="text-muted mt-1 block text-sm">{texto}</span>
+              </button>
+            ))}
+          </div>
+        )}
+      </Panel>
 
       <Panel titulo={mesas ? `${mesas.length} mesa(s)` : "Mesas"}>
         {erro ? (
@@ -143,12 +192,28 @@ export default function AdminMesas() {
                   </Cell>
                   <Cell>
                     {tablet ? (
-                      <Badge tom={tablet.is_paired ? "ok" : "alerta"}>{tablet.is_paired ? tablet.name : "Aguardando pareamento"}</Badge>
+                      <Badge tom="ok">{tablet.name}</Badge>
                     ) : (
                       <span className="text-muted">sem tablet</span>
                     )}
                   </Cell>
-                  <Cell>{m.ordering_enabled ? <Badge tom="ok">Pedindo</Badge> : <Badge tom="alerta">Desligado</Badge>}</Cell>
+                  <Cell>
+                    <div className="flex flex-wrap items-center gap-2">
+                      {m.ordering_enabled ? <Badge tom="ok">Pedindo</Badge> : <Badge tom="alerta">Pausado</Badge>}
+                      {gestor ? (
+                        <button
+                          type="button"
+                          onClick={() => (m.ordering_enabled ? setPausando(m) : setRetomando(m))}
+                          className="jm-touch jm-focus text-muted text-sm font-semibold underline"
+                        >
+                          {m.ordering_enabled ? "Pausar" : "Retomar"}
+                        </button>
+                      ) : null}
+                    </div>
+                    {!m.ordering_enabled && m.ordering_disabled_reason ? (
+                      <p className="text-muted mt-1 text-xs">{m.ordering_disabled_reason}</p>
+                    ) : null}
+                  </Cell>
                   <Cell alinhar="right">
                     <Switch
                       ligado={m.is_active}
@@ -162,6 +227,26 @@ export default function AdminMesas() {
           </Table>
         )}
       </Panel>
+
+      {pausando ? (
+        <DialogoDeMotivo
+          titulo={`Pausar o pedido da mesa ${pausando.number}?`}
+          texto="O cardápio continua navegável, o tablet mostra “peça ao garçom”, e o chamado de garçom segue funcionando."
+          rotulo="Pausar pedido"
+          sugestoes={["Tablet com defeito", "Mesa reservada"]}
+          onConfirmar={(motivo) => contingencia(pausando, false, motivo)}
+          onFechar={() => setPausando(null)}
+        />
+      ) : null}
+      {retomando ? (
+        <DialogoDeConfirmacao
+          titulo={`Retomar o pedido da mesa ${retomando.number}?`}
+          texto="O tablet volta a enviar pedidos em até 10 s."
+          rotulo="Retomar pedido"
+          onConfirmar={() => contingencia(retomando, true, null)}
+          onFechar={() => setRetomando(null)}
+        />
+      ) : null}
     </>
   );
 }

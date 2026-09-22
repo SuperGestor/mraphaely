@@ -94,13 +94,6 @@ export interface CardapioAdmin {
   ligacoes: LigacaoAdmin[];
 }
 
-/** QR de configuração com o código de uso único. Existe na tela uma vez. */
-export interface Pareamento {
-  qr: string;
-  url: string;
-  expiraEm: string;
-}
-
 export class FalhaDoAdmin extends Error {
   constructor(
     public readonly status: number,
@@ -122,11 +115,8 @@ export interface AdminSource {
   usuarios(lojaId: Uuid): Promise<StoreUserRow[]>;
   /** Escrita por function do banco, pela lista fechada de /api/admin/rpc. */
   rpc(fn: string, params: Record<string, unknown>): Promise<unknown>;
-  provisionar(dados: { store_id: Uuid; table_id: Uuid; name: string }): Promise<Pareamento>;
-  alterarDispositivo(
-    id: Uuid,
-    corpo: { acao: "estado"; status: "active" | "inactive" | "retired" } | { acao: "novo_codigo" },
-  ): Promise<Pareamento | null>;
+  /** Parear é no próprio tablet, com o login do dono ou do gestor (21/09/2026). */
+  alterarDispositivo(id: Uuid, corpo: { acao: "estado"; status: "active" | "inactive" | "retired" }): Promise<void>;
   convidar(dados: { store_id: Uuid; email: string; role: StoreRole }): Promise<void>;
   alterarUsuario(id: Uuid, corpo: { acao: "papel"; role: StoreRole } | { acao: "desativar" }): Promise<void>;
   enviarFoto(productId: Uuid, arquivo: File): Promise<string>;
@@ -185,7 +175,6 @@ const exemplo: AdminSource = {
   dispositivos: async () => mockDevices,
   usuarios: async () => mockUsers,
   rpc: SO_LEITURA,
-  provisionar: SO_LEITURA,
   alterarDispositivo: SO_LEITURA,
   convidar: SO_LEITURA,
   alterarUsuario: SO_LEITURA,
@@ -270,14 +259,8 @@ const real: AdminSource = {
     return r.resultado;
   },
 
-  async provisionar(corpo) {
-    const r = await pedir<{ pareamento: Pareamento }>("/api/admin/dispositivos", json(corpo));
-    return r.pareamento;
-  },
-
   async alterarDispositivo(id, corpo) {
-    const r = await pedir<{ pareamento?: Pareamento }>(`/api/admin/dispositivos/${encodeURIComponent(id)}`, json(corpo));
-    return r.pareamento ?? null;
+    await pedir(`/api/admin/dispositivos/${encodeURIComponent(id)}`, json(corpo));
   },
 
   async convidar(corpo) {

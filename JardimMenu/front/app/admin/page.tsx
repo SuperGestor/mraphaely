@@ -30,10 +30,9 @@ export default function AdminResumo() {
   const semCodigoPdv = produtos.filter((p) => !p.pdv_code).length;
   const semFoto = produtos.filter((p) => !p.photo_path).length;
   const mesasSemTablet = mesas.filter((m) => m.is_active && !ativos.some((d) => d.table_id === m.id)).length;
-  const aguardando = ativos.filter((d) => !d.is_paired).length;
   const bateriaBaixa = ativos.filter((d) => (d.battery_level ?? 100) < 20).length;
   const semContato = ativos.filter(
-    (d) => d.is_paired && d.last_seen_at !== null && Date.now() - Date.parse(d.last_seen_at) > 5 * 60_000,
+    (d) => d.last_seen_at !== null && Date.now() - Date.parse(d.last_seen_at) > 5 * 60_000,
   ).length;
 
   const carregando = cardapio === null && !erro;
@@ -43,7 +42,6 @@ export default function AdminResumo() {
     ["Sem código do PDV", semCodigoPdv, semCodigoPdv > 0 ? "alerta" : "neutro"],
     ["Sem foto", semFoto, "neutro"],
     ["Mesas sem tablet ativo", mesasSemTablet, mesasSemTablet > 0 ? "alerta" : "neutro"],
-    ["Tablets aguardando pareamento", aguardando, aguardando > 0 ? "alerta" : "neutro"],
     ["Tablets sem contato há 5 min", semContato, semContato > 0 ? "erro" : "neutro"],
     ["Tablets com bateria baixa", bateriaBaixa, bateriaBaixa > 0 ? "erro" : "neutro"],
   ];
@@ -81,7 +79,7 @@ export default function AdminResumo() {
         <div className="space-y-3">
           <Hint>
             Marca, nome e domínio do produto são provisórios (A1). Eles vivem só em <code>lib/brand.ts</code>, e o
-            domínio precisa estar decidido antes de provisionar os tablets de produção.
+            domínio precisa estar decidido antes de parear os tablets de produção.
           </Hint>
           <Hint>
             A integração com o PDV está em pausa (D24, A18). Enquanto isso, o pedido do tablet aparece na tela da

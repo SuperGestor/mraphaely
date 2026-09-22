@@ -38,8 +38,6 @@ export const mockDevices: DeviceRow[] = [
     app_version: "1.0.0",
     battery_level: [82, 64, 91, 14, 77, 55, 38, 96][i],
     last_seen_at: minutosAtras([1, 2, 1, 3, 1, 12, 2, 1][i]),
-    is_paired: true,
-    pairing_expires_at: null,
   })),
   {
     id: id("4444", 9),
@@ -51,8 +49,6 @@ export const mockDevices: DeviceRow[] = [
     app_version: "1.0.0",
     battery_level: null,
     last_seen_at: minutosAtras(240),
-    is_paired: true,
-    pairing_expires_at: null,
   },
   {
     id: id("4444", 10),
@@ -64,8 +60,6 @@ export const mockDevices: DeviceRow[] = [
     app_version: "0.9.4",
     battery_level: null,
     last_seen_at: null,
-    is_paired: true,
-    pairing_expires_at: null,
   },
 ];
 
