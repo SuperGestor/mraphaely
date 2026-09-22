@@ -1,4 +1,5 @@
-// Verificação ponta a ponta do prompt 2: Supabase local + servidor Next de produção.
+// Verificação ponta a ponta do prompt 2 e do pareamento com login (prompt 3, bloco 1):
+// Supabase local + servidor Next de produção.
 //
 //   1. em back/:  npx supabase db reset --local         (massa limpa do seed)
 //   2. em front/: npm run build && npm run start         (com .env.local apontando para o local)
@@ -83,7 +84,7 @@ async function entrar(email) {
 
 const token = (t) => ({ 'x-device-token': t ?? '' });
 const rpc = (quem, fn, corpo) => http('POST', `/api/admin/rpc/${fn}`, { cookie: quem.cookie, corpo });
-const codigoDaUrl = (url) => (url ? new URL(url).searchParams.get('codigo') : null);
+const configurar = (corpo) => http('POST', '/api/tablet/configurar', { corpo: { loja: 'jardim-secreto', ...corpo } });
 
 console.log(`Servidor: ${BASE}\nSupabase: ${SB_URL}`);
 
@@ -131,9 +132,8 @@ confere(r.status === 200 && r.json.produtos.length === 0, 'gestor da Confraria n
 r = await http('GET', `/api/admin/dados/mesas?loja=${JARDIM}`, { cookie: dono.cookie });
 const mesas = r.json?.mesas ?? [];
 confere(r.status === 200 && mesas.length === 10, 'mesas do Jardim', `${mesas.length} mesas`);
-confere(!/qr_token|token_hash|pairing_code_hash/.test(r.texto), 'leitura de mesas sem qr_token nem hash');
+confere(!/qr_token|token_hash/.test(r.texto), 'leitura de mesas sem qr_token nem hash');
 const mesa1 = mesas.find((m) => m.number === 1)?.id;
-const mesa2 = mesas.find((m) => m.number === 2)?.id;
 
 r = await http('GET', `/api/admin/dados/usuarios?loja=${JARDIM}`, { cookie: dono.cookie });
 const emails = (Array.isArray(r.json) ? r.json : []).map((u) => `${u.email}:${u.role}`).sort().join(', ');
@@ -199,40 +199,38 @@ r = await rpc(outraLoja, 'staff_set_product_availability', { p_product_id: ANCHO
 confere([403, 404].includes(r.status), 'gestor da Confraria não mexe na disponibilidade do Jardim', det(r));
 
 // ============================================================
-secao('5. Dispositivo: provisionar, parear, ler');
-r = await http('POST', '/api/admin/dispositivos', { cookie: outraLoja.cookie, corpo: { store_id: JARDIM, table_id: mesa1, name: 'Intruso' } });
-confere(r.status === 403, 'gestor da Confraria não provisiona tablet no Jardim', det(r));
+secao('5. Pareamento com login da equipe, no próprio tablet (JM-180)');
+r = await configurar({ email: 'garcom@jardim.local', senha: SENHA, mesa: 1 });
+confere(r.status === 403, 'garçom não pareia tablet', det(r));
+r = await configurar({ email: 'gestor@confraria.local', senha: SENHA, mesa: 1 });
+confere(r.status === 403, 'gestor da Confraria não pareia tablet do Jardim', det(r));
+r = await configurar({ email: 'dono@jardim.local', senha: 'senha-errada-123', mesa: 1 });
+confere(r.status === 401, 'senha errada é recusada', det(r));
+r = await configurar({ email: 'dono@jardim.local', senha: SENHA, mesa: 99 });
+confere(r.status === 404, 'mesa inexistente é recusada', det(r));
+r = await configurar({ email: 'dono@jardim.local', senha: SENHA, mesa: 1, preco: 0 });
+confere(r.status === 422, 'campo fora do schema é recusado', det(r));
 
-r = await http('POST', '/api/admin/dispositivos', { cookie: dono.cookie, corpo: { store_id: JARDIM, table_id: mesa1, name: 'Tablet mesa 1' } });
-const disp1 = r.json?.dispositivo;
-const url1 = r.json?.pareamento?.url ?? '';
-confere(
-  r.status === 201 && url1.includes('/jardim-secreto/tablet/setup?codigo=') && String(r.json?.pareamento?.qr).startsWith('data:image/png;base64,'),
-  'dono provisiona o tablet da mesa 1, com QR de pareamento',
-  r.status === 201 ? url1.replace(/codigo=.*/, 'codigo=…') : det(r),
-);
-confere(!/token_hash|pairing_code_hash|"token"/.test(r.texto), 'provisionamento não devolve token nem hash');
-const codigo1 = codigoDaUrl(url1);
-
-r = await http('GET', '/api/tablet/cardapio', { headers: token(codigo1) });
-confere(r.status === 401, 'o código de pareamento não serve como token', det(r));
-r = await http('POST', '/api/tablet/parear', { corpo: { codigo: codigo1 } });
+r = await configurar({ email: 'dono@jardim.local', senha: SENHA, mesa: 1 });
 const token1 = r.json?.token;
 confere(
-  r.status === 200 && /^[A-Za-z0-9_-]{22}$/.test(token1 ?? '') && r.json?.loja === 'jardim-secreto' && r.json?.mesa === 1,
-  'tablet troca o código pelo token, com loja e mesa certas',
-  r.status === 200 ? `loja=${r.json?.loja} mesa=${r.json?.mesa} token de ${String(token1).length} caracteres` : det(r),
+  r.status === 201 && /^[A-Za-z0-9_-]{22}$/.test(token1 ?? '') && r.json?.loja === 'jardim-secreto' && r.json?.mesa === 1,
+  'dono pareia o tablet da mesa 1',
+  r.status === 201 ? `loja=${r.json?.loja} mesa=${r.json?.mesa} token de ${String(token1).length} caracteres` : det(r),
 );
 confere((r.headers.get('cache-control') ?? '').includes('no-store'), 'resposta do pareamento sem cache', r.headers.get('cache-control'));
-r = await http('POST', '/api/tablet/parear', { corpo: { codigo: codigo1 } });
-confere(r.status === 401, 'o mesmo código não pareia de novo (uso único)', det(r));
+const cookiesDoPareamento = r.headers.getSetCookie?.() ?? [];
+confere(cookiesDoPareamento.length === 0, 'nenhum cookie da equipe volta para o tablet', `${cookiesDoPareamento.length} set-cookie`);
+r = await http('GET', '/api/admin/dados/contexto', { cookie: dono.cookie });
+confere(r.status === 200, 'o login do dono em outro aparelho continua valendo', det(r));
+r = await http('POST', '/api/tablet/parear', { corpo: { codigo: 'AAAAAAAAAAAAAAAAAAAAAA' } });
+confere(r.status === 404, 'a rota de pareamento por código não existe mais', det(r));
 
 r = await http('GET', `/api/admin/dados/dispositivos?loja=${JARDIM}`, { cookie: dono.cookie });
-const visto1 = r.json?.dispositivos?.find((d) => d.id === disp1?.id);
-confere(visto1?.is_paired === true && visto1?.pairing_expires_at === null, 'admin vê o tablet pareado', JSON.stringify({ is_paired: visto1?.is_paired, pairing_expires_at: visto1?.pairing_expires_at }));
-confere(!/token_hash|pairing_code_hash/.test(r.texto), 'leitura de dispositivos sem hash');
-r = await http('POST', `/api/admin/dispositivos/${disp1?.id}`, { cookie: dono.cookie, corpo: { acao: 'novo_codigo' } });
-confere(r.status === 409, 'tablet já pareado não recebe código novo', det(r));
+const daMesa1 = (r.json?.dispositivos ?? []).filter((d) => d.table_id === mesa1);
+const disp1 = daMesa1.find((d) => d.status === 'active');
+confere(daMesa1.length === 1 && disp1?.name === 'Tablet mesa 1', 'admin vê o tablet ativo da mesa 1', JSON.stringify(daMesa1.map((d) => ({ name: d.name, status: d.status }))));
+confere(!/token_hash|"token"/.test(r.texto), 'leitura de dispositivos sem token nem hash');
 
 r = await http('GET', '/api/tablet/pareamento', { headers: token(token1) });
 confere(r.status === 200 && r.json?.table_number === 1 && r.json?.store_slug === 'jardim-secreto', 'tablet resolve loja e mesa pelo token', det(r));
@@ -271,15 +269,19 @@ confere(r.status === 401, 'total sem X-Device-Token é recusado', det(r));
 
 // ============================================================
 secao('7. Ciclo de vida do dispositivo');
-r = await http('POST', '/api/admin/dispositivos', { cookie: gestor.cookie, corpo: { store_id: JARDIM, table_id: mesa1, name: 'Tablet mesa 1 (troca)' } });
-const disp2 = r.json?.dispositivo;
-const codigo2 = codigoDaUrl(r.json?.pareamento?.url);
-confere(r.status === 201, 'gestor reprovisiona a mesa 1 (troca de tablet)', det(r));
+r = await configurar({ email: 'gestor@jardim.local', senha: SENHA, mesa: 1, nome: 'Tablet mesa 1 (troca)' });
+const token2 = r.json?.token;
+confere(r.status === 201, 'gestor pareia outro tablet na mesa 1 (troca de aparelho)', det(r));
 r = await http('GET', '/api/tablet/cardapio', { headers: token(token1) });
 confere(r.status === 410, 'token do tablet substituído responde 410', det(r));
-r = await http('POST', '/api/tablet/parear', { corpo: { codigo: codigo2 } });
-const token2 = r.json?.token;
-confere(r.status === 200, 'tablet novo pareia', det(r));
+r = await http('GET', '/api/tablet/cardapio', { headers: token(token2) });
+confere(r.status === 200, 'o tablet novo lê o cardápio', det(r));
+r = await http('GET', `/api/admin/dados/contexto`, { cookie: gestor.cookie });
+confere(r.status === 200, 'o login do gestor em outro aparelho continua valendo', det(r));
+
+r = await http('GET', `/api/admin/dados/dispositivos?loja=${JARDIM}`, { cookie: gestor.cookie });
+const disp2 = (r.json?.dispositivos ?? []).find((d) => d.table_id === mesa1 && d.status === 'active');
+confere(disp2?.name === 'Tablet mesa 1 (troca)', 'o admin mostra o tablet novo como o ativo da mesa 1', disp2?.name ?? 'nenhum');
 r = await http('POST', `/api/admin/dispositivos/${disp2?.id}`, { cookie: gestor.cookie, corpo: { acao: 'estado', status: 'inactive' } });
 confere(r.status === 200, 'gestor desativa o tablet', det(r));
 r = await http('GET', '/api/tablet/cardapio', { headers: token(token2) });
@@ -292,17 +294,8 @@ r = await http('POST', `/api/admin/dispositivos/${disp2?.id}`, { cookie: outraLo
 confere(r.status === 403, 'gestor da Confraria não aposenta tablet do Jardim', det(r));
 r = await http('POST', `/api/admin/dispositivos/${disp1?.id}`, { cookie: dono.cookie, corpo: { acao: 'estado', status: 'active' } });
 confere(r.status === 410, 'tablet aposentado não volta', det(r));
-
-r = await http('POST', '/api/admin/dispositivos', { cookie: dono.cookie, corpo: { store_id: JARDIM, table_id: mesa2, name: 'Tablet mesa 2' } });
-const disp3 = r.json?.dispositivo;
-const codigoA = codigoDaUrl(r.json?.pareamento?.url);
-r = await http('POST', `/api/admin/dispositivos/${disp3?.id}`, { cookie: dono.cookie, corpo: { acao: 'novo_codigo' } });
-const codigoB = codigoDaUrl(r.json?.pareamento?.url);
-confere(r.status === 200 && codigoB && codigoB !== codigoA, 'tablet que não pareou recebe código novo', det(r));
-r = await http('POST', '/api/tablet/parear', { corpo: { codigo: codigoA } });
-confere(r.status === 401, 'o código anterior morre quando o novo é gerado', det(r));
-r = await http('POST', '/api/tablet/parear', { corpo: { codigo: codigoB } });
-confere(r.status === 200 && r.json?.mesa === 2, 'o código novo pareia a mesa 2', det(r));
+r = await http('POST', `/api/admin/dispositivos/${disp2?.id}`, { cookie: dono.cookie, corpo: { acao: 'novo_codigo' } });
+confere(r.status === 422, 'a ação de código novo não existe mais', det(r));
 
 // ============================================================
 secao('8. Pixel (JM-061, JM-062)');

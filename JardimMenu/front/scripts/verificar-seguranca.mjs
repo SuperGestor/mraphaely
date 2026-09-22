@@ -38,19 +38,43 @@ const rel = (p) => path.relative(RAIZ, p).split(path.sep).join('/');
 // ---------- 1. Rotas que escrevem ----------
 console.log('=== Rotas de escrita (regra 1)');
 const rotas = arquivos(path.join(FRONT, 'app', 'api'), (p) => /route\.tsx?$/.test(p));
-const ANONIMAS_PERMITIDAS = ['front/app/api/track/route.ts', 'front/app/api/tablet/[acao]/route.ts'];
+// A única escrita anônima é o pixel (regra 1).
+const ANONIMAS_PERMITIDAS = ['front/app/api/track/route.ts'];
+// Rotas do tablet: sem cookie, mas com X-Device-Token, conferido na function do banco.
+const COM_DISPOSITIVO = ['front/app/api/tablet/[acao]/route.ts', 'front/app/api/orders/route.ts'];
+// O pareamento do tablet não tem cookie: quem autoriza é o login do dono ou do gestor,
+// enviado no corpo e conferido no servidor (decisão de 21/09/2026).
+const LOGIN_NO_CORPO = ['front/app/api/tablet/configurar/route.ts'];
 for (const rota of rotas) {
   const src = fs.readFileSync(rota, 'utf8');
   const escreve = /export\s+async\s+function\s+(POST|PUT|PATCH|DELETE)\b/.test(src);
   if (!escreve) continue;
   const r = rel(rota);
-  const admin = r.startsWith('front/app/api/admin/');
-  resultado(admin || ANONIMAS_PERMITIDAS.includes(r), `escrita em ${r}`, admin ? 'exige login (middleware) e papel (function)' : ANONIMAS_PERMITIDAS.includes(r) ? 'anônima permitida' : 'escrita anônima NÃO permitida');
+  const admin = r.startsWith('front/app/api/admin/') || r.startsWith('front/app/api/equipe/');
+  const comLogin = LOGIN_NO_CORPO.includes(r);
+  const dispositivo = COM_DISPOSITIVO.includes(r);
+  const pixel = ANONIMAS_PERMITIDAS.includes(r);
+  resultado(admin || comLogin || dispositivo || pixel, `escrita em ${r}`, admin ? 'exige login (middleware) e papel (function)' : comLogin ? 'exige login do dono ou gestor no corpo' : dispositivo ? 'exige X-Device-Token, conferido no banco' : pixel ? 'anônima permitida (pixel)' : 'escrita anônima NÃO permitida');
 }
-resultado(!fs.existsSync(path.join(FRONT, 'app', 'api', 'orders')), 'não existe /api/orders na Fase A');
-resultado(!fs.existsSync(path.join(FRONT, 'app', 'api', 'staff')), 'não existe /api/staff/orders na Fase A');
+const rotaDoPedido = path.join(FRONT, 'app', 'api', 'orders', 'route.ts');
+resultado(fs.existsSync(rotaDoPedido) && fs.readFileSync(rotaDoPedido, 'utf8').includes('enviarPedido'), '/api/orders passa pelo controller do tablet (X-Device-Token e Idempotency-Key)');
+resultado(!fs.existsSync(path.join(FRONT, 'app', 'api', 'staff')), 'não existe /api/staff/orders antes da Fase C (JM-110)');
 const mw = fs.readFileSync(path.join(FRONT, 'middleware.ts'), 'utf8');
-resultado(mw.includes('"/api/admin/:path*"'), 'middleware cobre /api/admin');
+resultado(mw.includes('"/api/admin/:path*"') && mw.includes('"/api/equipe/:path*"') && mw.includes('"/equipe/:path*"'), 'middleware cobre /api/admin, /equipe e /api/equipe');
+
+// O service worker nunca guarda a conta da mesa nem a tela da equipe (JM-011, JM-012).
+const sw = fs.readFileSync(path.join(FRONT, 'app', 'sw.ts'), 'utf8');
+const regraDoSw = sw.match(/const ROTAS_SEM_CACHE =\s*(\/.*\/);/);
+let semCache = null;
+try { semCache = regraDoSw ? eval(regraDoSw[1]) : null; } catch { semCache = null; }
+const soRede = ['/api/tablet/resumo', '/api/tablet/horario', '/api/tablet/pareamento', '/equipe', '/api/equipe/salao', '/admin', '/login', '/jardim-secreto/tablet/setup'];
+resultado(semCache !== null && soRede.every((p) => semCache.test(p)), 'service worker: resumo, horário, pareamento, equipe, admin e login só pela rede', soRede.filter((p) => !semCache?.test(p)).join(', ') || 'todas cobertas');
+
+// Realtime só na tela da equipe (§8.6): o cliente do navegador não chega ao tablet.
+const importamRealtime = arquivos(FRONT, (p) => /\.(ts|tsx)$/.test(p) && !p.includes('node_modules') && !p.includes(`${path.sep}.next${path.sep}`))
+  .filter((p) => !p.endsWith('supabase-navegador.ts') && fs.readFileSync(p, 'utf8').includes('supabase-navegador'))
+  .map(rel);
+resultado(importamRealtime.length === 1 && importamRealtime[0].endsWith('equipe-source.ts'), 'o cliente Realtime do navegador só é usado pela tela da equipe', importamRealtime.join(', ') || 'ninguém importa');
 
 // ---------- 2. service_role num único arquivo ----------
 console.log('\n=== Chave service_role (regra 4)');
@@ -92,7 +116,7 @@ if (!fs.existsSync(STATIC)) {
   const valorDaChave = process.env[NOME_DA_CHAVE];
   // Textos que só existem em back/: se um deles aparecer no bundle, código de servidor
   // foi parar no navegador (D33). É a prova do resultado, e não da intenção.
-  const MARCAS_DO_BACK = ['pixel.ingestao.invalida', 'admin_provision_device', 'tablet_pair_device', 'convidarNoAuth', 'servidor.5xx', 'admin_list_store_users'];
+  const MARCAS_DO_BACK = ['pixel.ingestao.invalida', 'staff_pair_device', 'convidarNoAuth', 'servidor.5xx', 'admin_list_store_users'];
   for (const p of js) {
     const src = fs.readFileSync(p, 'utf8');
     for (const marca of MARCAS_DO_BACK) {
@@ -123,13 +147,17 @@ if (BASE) {
     const s = await promessa;
     resultado(aceita.includes(s), nome, `HTTP ${s}`);
   };
-  await esperado('POST /api/orders devolve 404', status('POST', '/api/orders', {}), [404]);
-  await esperado('POST /api/staff/orders devolve 404', status('POST', '/api/staff/orders', {}), [404]);
+  await esperado('POST /api/orders sem X-Device-Token é recusado', status('POST', '/api/orders', {}, { 'idempotency-key': 'chave-de-teste-0001' }), [401, 503]);
+  await esperado('POST /api/orders com token falso é recusado', status('POST', '/api/orders', { session_id: '00000000-0000-4000-8000-000000000001', tab_id: '00000000-0000-4000-8000-000000000002', items: [{ product_id: '00000000-0000-4000-8000-000000000003', quantity: 1, option_ids: [], notes: null }] }, { 'x-device-token': 'AAAAAAAAAAAAAAAAAAAAAA', 'idempotency-key': 'chave-de-teste-0001' }), [401, 503]);
+  await esperado('POST /api/equipe/cancelar_pedido sem login é recusado', status('POST', '/api/equipe/cancelar_pedido', {}), [401, 503]);
+  await esperado('GET /api/equipe/salao sem login é recusado', status('GET', '/api/equipe/salao?loja=00000000-0000-4000-8000-000000000001'), [401, 503]);
+  await esperado('POST /api/staff/orders devolve 404 (Fase C)', status('POST', '/api/staff/orders', {}), [404]);
   await esperado('POST /api/admin/dispositivos sem login é recusado', status('POST', '/api/admin/dispositivos', {}), [401, 403, 503]);
   await esperado('POST /api/admin/usuarios sem login é recusado', status('POST', '/api/admin/usuarios', {}), [401, 403, 503]);
   await esperado('GET /api/tablet/cardapio sem token é recusado', status('GET', '/api/tablet/cardapio'), [401, 503]);
   await esperado('GET /api/tablet/cardapio com token falso é recusado', status('GET', '/api/tablet/cardapio', undefined, { 'x-device-token': 'AAAAAAAAAAAAAAAAAAAAAA' }), [401, 503]);
-  await esperado('POST /api/tablet/parear com código falso é recusado', status('POST', '/api/tablet/parear', { codigo: 'AAAAAAAAAAAAAAAAAAAAAA' }), [401, 503]);
+  await esperado('POST /api/tablet/parear não existe mais', status('POST', '/api/tablet/parear', { codigo: 'AAAAAAAAAAAAAAAAAAAAAA' }), [404]);
+  await esperado('POST /api/tablet/configurar com login falso é recusado', status('POST', '/api/tablet/configurar', { loja: 'jardim-secreto', email: 'ninguem@exemplo.com', senha: 'senha-errada-123', mesa: 1 }), [401, 503]);
   await esperado('POST /api/track com evento de campo extra é recusado', status('POST', '/api/track', { session_id: '00000000-0000-4000-8000-000000000001', store_id: '00000000-0000-4000-8000-000000000002', events: [{ event_type: 'page_view', at: new Date().toISOString(), nome: 'Maria' }] }), [400]);
 }
 
