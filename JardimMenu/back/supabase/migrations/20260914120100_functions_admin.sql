@@ -342,101 +342,54 @@ $fn$;
 -- 5. Dispositivos (JM-180, NF-006)
 -- ============================================================
 
--- Provisiona o tablet de uma mesa (JM-180). O dispositivo nasce SEM token: nasce com um
--- código de uso único, válido por 10 minutos, que o QR de configuração carrega. O token
--- permanente é gerado no pareamento e só aparece na resposta dele (decisão de 14/09/2026).
--- Reprovisionar aposenta o dispositivo ativo anterior da mesa, e o índice único garante
--- um ativo por mesa mesmo em corrida.
-create function admin_provision_device(
+-- Pareamento do tablet (JM-180, decisão de 21/09/2026). O dono ou o gestor entra com o
+-- próprio login no tablet e informa a mesa; o servidor gera o token e manda só o hash.
+-- Parear de novo a mesma mesa aposenta o tablet ativo anterior, cujo token passa a ser
+-- recusado (JM410). O índice único garante um ativo por mesa mesmo em corrida.
+create function staff_pair_device(
   p_store_id uuid,
   p_table_id uuid,
   p_name text,
-  p_pairing_code_hash text
+  p_token_hash text
 )
-returns table (
-  id uuid,
-  name text,
-  table_id uuid,
-  status text,
-  provisioned_at timestamptz,
-  pairing_expires_at timestamptz
-)
+returns table (device_id uuid, table_number int)
 language plpgsql
 security definer
 set search_path = pg_catalog, public
 as $fn$
 declare
   v_autor uuid;
+  v_numero int;
   v_id uuid;
 begin
   v_autor := jm_require_role(p_store_id, array['owner', 'manager']);
 
-  if p_pairing_code_hash is null or p_pairing_code_hash !~ '^[0-9a-f]{64}$' then
-    raise exception 'hash de codigo invalido' using errcode = 'JM422';
+  if p_token_hash is null or p_token_hash !~ '^[0-9a-f]{64}$' then
+    raise exception 'hash de token invalido' using errcode = 'JM422';
   end if;
-  if not exists (select 1 from public.tables t where t.id = p_table_id and t.store_id = p_store_id) then
-    raise exception 'mesa nao pertence a esta loja' using errcode = 'JM422';
+
+  select t.number into v_numero
+    from public.tables t
+   where t.id = p_table_id and t.store_id = p_store_id and t.is_active
+   for update;
+  if v_numero is null then
+    raise exception 'mesa nao encontrada nesta loja' using errcode = 'JM404';
   end if;
 
   update public.devices d
      set status = 'retired', retired_at = now(), retired_by = v_autor
    where d.table_id = p_table_id and d.status = 'active';
 
-  insert into public.devices (store_id, table_id, name, pairing_code_hash, pairing_expires_at, provisioned_by)
-  values (p_store_id, p_table_id, trim(p_name), p_pairing_code_hash, now() + interval '10 minutes', v_autor)
+  insert into public.devices (store_id, table_id, name, token_hash, provisioned_by)
+  values (p_store_id, p_table_id, trim(p_name), p_token_hash, v_autor)
   returning devices.id into v_id;
 
-  return query
-    select d.id, d.name, d.table_id, d.status, d.provisioned_at, d.pairing_expires_at
-      from public.devices d
-     where d.id = v_id;
+  return query select v_id, v_numero;
 exception
   when unique_violation then
-    raise exception 'outro dispositivo ficou ativo nesta mesa ao mesmo tempo' using errcode = 'JM409';
+    raise exception 'outro tablet ficou ativo nesta mesa ao mesmo tempo' using errcode = 'JM409';
   when check_violation then
-    raise exception 'nome de dispositivo invalido' using errcode = 'JM422';
-end;
-$fn$;
-
--- Novo código para o tablet que não pareou a tempo. Só vale para dispositivo ativo e ainda
--- sem token: trocar o tablet de uma mesa já pareada é provisionar outro.
-create function admin_renew_pairing_code(p_device_id uuid, p_pairing_code_hash text)
-returns timestamptz
-language plpgsql
-security definer
-set search_path = pg_catalog, public
-as $fn$
-declare
-  v_store uuid;
-  v_status text;
-  v_token text;
-  v_expira timestamptz;
-begin
-  select d.store_id, d.status, d.token_hash into v_store, v_status, v_token
-    from public.devices d where d.id = p_device_id;
-  if v_store is null then
-    raise exception 'dispositivo nao encontrado' using errcode = 'JM404';
-  end if;
-  perform jm_require_role(v_store, array['owner', 'manager']);
-
-  if p_pairing_code_hash is null or p_pairing_code_hash !~ '^[0-9a-f]{64}$' then
-    raise exception 'hash de codigo invalido' using errcode = 'JM422';
-  end if;
-  if v_status <> 'active' then
-    raise exception 'so dispositivo ativo recebe codigo de pareamento' using errcode = 'JM423';
-  end if;
-  if v_token is not null then
-    raise exception 'dispositivo ja pareado; para trocar o tablet, provisione outro' using errcode = 'JM409';
-  end if;
-
-  v_expira := now() + interval '10 minutes';
-  update public.devices
-     set pairing_code_hash = p_pairing_code_hash, pairing_expires_at = v_expira
-   where id = p_device_id;
-  return v_expira;
-exception
-  when unique_violation then
-    raise exception 'codigo repetido; gere outro' using errcode = 'JM409';
+    raise exception 'nome de tablet invalido' using errcode = 'JM422';
 end;
 $fn$;
 
@@ -462,7 +415,7 @@ begin
     raise exception 'estado de dispositivo invalido' using errcode = 'JM422';
   end if;
   if v_atual = 'retired' then
-    raise exception 'dispositivo aposentado nao volta; provisione outro' using errcode = 'JM410';
+    raise exception 'dispositivo aposentado nao volta; pareie outro' using errcode = 'JM410';
   end if;
 
   update public.devices
@@ -606,9 +559,8 @@ revoke execute on function admin_upsert_option_group(uuid, uuid, text, int, int)
 revoke execute on function admin_upsert_option(uuid, uuid, text, numeric, text, boolean, int) from public, anon, authenticated;
 revoke execute on function admin_set_product_groups(uuid, uuid[]) from public, anon, authenticated;
 revoke execute on function admin_upsert_table(uuid, uuid, int, text, boolean) from public, anon, authenticated;
-revoke execute on function admin_provision_device(uuid, uuid, text, text) from public, anon, authenticated;
+revoke execute on function staff_pair_device(uuid, uuid, text, text) from public, anon, authenticated;
 revoke execute on function admin_set_device_status(uuid, text) from public, anon, authenticated;
-revoke execute on function admin_renew_pairing_code(uuid, text) from public, anon, authenticated;
 revoke execute on function admin_add_store_user(uuid, uuid, text) from public, anon, authenticated;
 revoke execute on function admin_set_store_user_role(uuid, text) from public, anon, authenticated;
 revoke execute on function admin_deactivate_store_user(uuid) from public, anon, authenticated;
@@ -621,9 +573,8 @@ grant execute on function admin_upsert_option_group(uuid, uuid, text, int, int) 
 grant execute on function admin_upsert_option(uuid, uuid, text, numeric, text, boolean, int) to authenticated;
 grant execute on function admin_set_product_groups(uuid, uuid[]) to authenticated;
 grant execute on function admin_upsert_table(uuid, uuid, int, text, boolean) to authenticated;
-grant execute on function admin_provision_device(uuid, uuid, text, text) to authenticated;
+grant execute on function staff_pair_device(uuid, uuid, text, text) to authenticated;
 grant execute on function admin_set_device_status(uuid, text) to authenticated;
-grant execute on function admin_renew_pairing_code(uuid, text) to authenticated;
 grant execute on function admin_add_store_user(uuid, uuid, text) to authenticated;
 grant execute on function admin_set_store_user_role(uuid, text) to authenticated;
 grant execute on function admin_deactivate_store_user(uuid) to authenticated;

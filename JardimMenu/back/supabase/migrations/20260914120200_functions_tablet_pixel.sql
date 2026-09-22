@@ -233,46 +233,6 @@ begin
 end;
 $fn$;
 
--- Pareamento (JM-180, decisão de 14/09/2026). O tablet apresenta o código de uso único do
--- QR; a rota gera o token permanente e manda só o hash dos dois. Código vencido, já usado
--- ou de dispositivo que não está ativo dão o MESMO erro, para não dizer a um estranho que
--- um código existe. É a segunda escrita anônima do sistema, e quem a autoriza é o código,
--- gerado por um gestor logado.
-create function tablet_pair_device(p_pairing_code_hash text, p_token_hash text)
-returns table (store_slug text, store_name text, table_number int, device_name text)
-language plpgsql
-security definer
-set search_path = pg_catalog, public
-as $fn$
-declare
-  v public.devices;
-begin
-  if p_pairing_code_hash is null or p_pairing_code_hash !~ '^[0-9a-f]{64}$'
-     or p_token_hash is null or p_token_hash !~ '^[0-9a-f]{64}$' then
-    raise exception 'codigo de pareamento invalido' using errcode = 'JM401';
-  end if;
-
-  select * into v
-    from public.devices d
-   where d.pairing_code_hash = p_pairing_code_hash
-   for update;
-
-  if not found or v.status <> 'active' or v.pairing_expires_at < now() then
-    raise exception 'codigo de pareamento invalido' using errcode = 'JM401';
-  end if;
-
-  update public.devices
-     set token_hash = p_token_hash, pairing_code_hash = null, pairing_expires_at = null
-   where id = v.id;
-
-  return query
-    select s.slug, s.name, t.number, v.name
-      from public.stores s
-      left join public.tables t on t.id = v.table_id
-     where s.id = v.store_id;
-end;
-$fn$;
-
 -- ============================================================
 -- 3. Pixel (JM-061, JM-063)
 -- ============================================================
@@ -383,7 +343,6 @@ revoke execute on function tablet_menu(text) from public, anon, authenticated;
 revoke execute on function tablet_store_hours(text) from public, anon, authenticated;
 revoke execute on function tablet_item_total(text, uuid, int, uuid[]) from public, anon, authenticated;
 revoke execute on function track_events(uuid, uuid, jsonb) from public, anon, authenticated;
-revoke execute on function tablet_pair_device(text, text) from public, anon, authenticated;
 
 -- O tablet não é usuário autenticado: a rota chama com a chave anon.
 grant execute on function tablet_resolve_device(text) to anon, authenticated;
@@ -391,6 +350,5 @@ grant execute on function tablet_menu(text) to anon, authenticated;
 grant execute on function tablet_store_hours(text) to anon, authenticated;
 grant execute on function tablet_item_total(text, uuid, int, uuid[]) to anon, authenticated;
 grant execute on function track_events(uuid, uuid, jsonb) to anon, authenticated;
-grant execute on function tablet_pair_device(text, text) to anon, authenticated;
 
 commit;

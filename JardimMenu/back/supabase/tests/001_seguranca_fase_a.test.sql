@@ -138,7 +138,9 @@ select is(
   (select coalesce(array_agg(p.proname::text order by p.proname), '{}')
      from pg_proc p join pg_namespace n on n.oid = p.pronamespace
     where n.nspname = 'public' and has_function_privilege('anon', p.oid, 'EXECUTE')),
-  array['tablet_item_total', 'tablet_menu', 'tablet_pair_device', 'tablet_resolve_device',
+  array['device_heartbeat', 'tablet_call_waiter', 'tablet_create_tab', 'tablet_item_total',
+        'tablet_menu', 'tablet_open_session', 'tablet_place_order', 'tablet_reinforce_call',
+        'tablet_request_cancel', 'tablet_resolve_device', 'tablet_session_summary',
         'tablet_store_hours', 'track_events'],
   'anon executa só as functions do tablet e do pixel'
 );

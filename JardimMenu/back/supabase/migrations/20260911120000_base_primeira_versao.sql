@@ -234,16 +234,10 @@ create table devices (
   store_id uuid not null references stores(id) on delete cascade,
   table_id uuid references tables(id) on delete restrict,
   name text not null,
-  -- sha256 do token permanente. Nulo até o tablet parear: o token nasce no pareamento, e
-  -- não no provisionamento, então a tela do admin nunca vê o token (decisão de 14/09/2026).
-  token_hash text,
-  -- sha256 do código de uso único que o QR de configuração carrega: vale 10 minutos e uma
-  -- leitura, e o pareamento apaga os dois campos.
-  pairing_code_hash text,
-  pairing_expires_at timestamptz,
-  -- Derivado, e não secreto: a tela do admin mostra se o tablet já pareou (JM-180) sem
-  -- ler hash nem código.
-  is_paired boolean generated always as (token_hash is not null) stored,
+  -- sha256 do token permanente. O token nasce no pareamento, que o dono ou o gestor faz
+  -- com o próprio login, no tablet (decisão de 21/09/2026). O banco guarda só o hash, e
+  -- nenhuma tela da equipe vê o token.
+  token_hash text not null,
   kind text not null default 'tablet',
   status text not null default 'active',
   app_version text,
@@ -254,9 +248,6 @@ create table devices (
   retired_at timestamptz,
   retired_by uuid references store_users(id),
   constraint devices_token_uq unique (token_hash),
-  constraint devices_pairing_uq unique (pairing_code_hash),
-  constraint devices_credential_ck check (token_hash is not null or pairing_code_hash is not null),
-  constraint devices_pairing_ck check ((pairing_code_hash is null) = (pairing_expires_at is null)),
   constraint devices_name_ck check (length(trim(name)) between 1 and 40),
   constraint devices_kind_ck check (kind in ('tablet')),
   constraint devices_status_ck check (status in ('active', 'inactive', 'retired')),
@@ -282,6 +273,10 @@ create table table_sessions (
   -- Não existe 'closing' (D19) nem 'expired' (D26).
   status text not null default 'open',
   opened_at timestamptz not null default now(),
+  -- Modo de comanda desta abertura, copiado da loja quando a mesa abre. Trocar o modo da
+  -- loja não afeta abertura viva (JM-200; decisão de 21/09/2026, fora do PLANO-SCHEMA).
+  -- Sem default de propósito: a function que abre a mesa tem de copiar o da loja.
+  tab_mode text not null,
   opened_by_device uuid references devices(id),
   opened_by_user uuid references store_users(id),
   closed_at timestamptz,
@@ -289,6 +284,7 @@ create table table_sessions (
   closed_by uuid references store_users(id),
   close_reason text,
   constraint sessions_status_ck check (status in ('open', 'closed')),
+  constraint sessions_tab_mode_ck check (tab_mode in ('mesa_unica', 'nomeada')),
   constraint sessions_opener_ck check (
     opened_by_device is not null or opened_by_user is not null
   ),
@@ -598,8 +594,7 @@ grant select on table organizations, stores, store_users, categories, products,
 -- devices.token_hash e tables.qr_token não são legíveis por ninguém.
 revoke select on table devices from authenticated;
 grant select (id, store_id, table_id, name, kind, status, app_version, battery_level,
-              last_seen_at, provisioned_by, provisioned_at, retired_at, retired_by,
-              is_paired, pairing_expires_at)
+              last_seen_at, provisioned_by, provisioned_at, retired_at, retired_by)
   on table devices to authenticated;
 
 revoke select on table tables from authenticated;
