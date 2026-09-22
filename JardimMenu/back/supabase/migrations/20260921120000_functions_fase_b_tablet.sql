@@ -20,7 +20,18 @@ begin;
 -- agora compartilhada com o pedido: o total que o tablet mostra e o que o pedido grava saem
 -- da mesma conta. Produto fora da janela do dia (JM-006) ou em categoria inativa também é
 -- recusado aqui, e não só escondido no cardápio.
-create function jm_item_price(p_store_id uuid, p_product_id uuid, p_quantity int, p_option_ids uuid[])
+--
+-- p_exigir_minimo: o pedido exige o mínimo de cada grupo; a prévia de preço do modal, não.
+-- Sem isso, produto com escolha obrigatória (ponto da carne) aparecia como "preço
+-- indisponível" até o cliente escolher, porque a prévia era recusada. O máximo, a opção
+-- inválida e a esgotada continuam recusados nos dois casos.
+create function jm_item_price(
+  p_store_id uuid,
+  p_product_id uuid,
+  p_quantity int,
+  p_option_ids uuid[],
+  p_exigir_minimo boolean default true
+)
 returns table (product_name text, unit_price numeric, unit_total numeric, line_total numeric, option_ids uuid[])
 language plpgsql
 stable
@@ -74,7 +85,7 @@ begin
       join public.option_groups g on g.id = pog.group_id
      where pog.product_id = p_product_id
   loop
-    if v_grupo.escolhidas < v_grupo.min_select or v_grupo.escolhidas > v_grupo.max_select then
+    if (p_exigir_minimo and v_grupo.escolhidas < v_grupo.min_select) or v_grupo.escolhidas > v_grupo.max_select then
       raise exception 'escolha fora do limite no grupo %', v_grupo.name using errcode = 'JM422';
     end if;
   end loop;
@@ -85,7 +96,8 @@ begin
 end;
 $fn$;
 
--- O total do item passa a usar a mesma conta do pedido.
+-- O total do item passa a usar a mesma conta do pedido, menos o mínimo por grupo: é a
+-- prévia do modal, enquanto o cliente ainda escolhe. O pedido confere o mínimo.
 create or replace function tablet_item_total(
   p_token_hash text,
   p_product_id uuid,
@@ -104,7 +116,7 @@ begin
   v := jm_device_by_hash(p_token_hash);
   return query
     select pr.unit_total, pr.line_total
-      from jm_item_price(v.store_id, p_product_id, p_quantity, p_option_ids) pr;
+      from jm_item_price(v.store_id, p_product_id, p_quantity, p_option_ids, false) pr;
 end;
 $fn$;
 
@@ -745,7 +757,7 @@ $fn$;
 -- 8. Quem executa o quê
 -- ============================================================
 
-revoke execute on function jm_item_price(uuid, uuid, int, uuid[]) from public, anon, authenticated;
+revoke execute on function jm_item_price(uuid, uuid, int, uuid[], boolean) from public, anon, authenticated;
 revoke execute on function jm_session_for_device(public.devices, boolean) from public, anon, authenticated;
 revoke execute on function jm_session_payload(uuid) from public, anon, authenticated;
 revoke execute on function tablet_open_session(text) from public, anon, authenticated;

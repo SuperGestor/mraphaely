@@ -7,7 +7,7 @@ begin;
 
 create extension if not exists pgtap with schema extensions;
 
-select plan(45);
+select plan(47);
 
 -- ---------- apoio ----------
 create function pg_temp.h(t text) returns text language sql immutable
@@ -168,6 +168,14 @@ select throws_ok($$ select tablet_place_order(pg_temp.h('fb-a1'), (select v from
 select throws_ok($$ select tablet_place_order(pg_temp.h('fb-a1'), (select v from ids where k = 's1'), (select v from ids where k = 'tab1'),
   'chave-pedido-9010', '[{"product_id":"00000000-0000-4000-8000-0000000003f1","quantity":1,"option_ids":["00000000-0000-4000-8000-000000000383"]}]') $$,
   'JM422', null, 'grupo obrigatório sem escolha');
+-- A prévia de preço do modal aceita o grupo obrigatório ainda sem escolha (o pedido, não),
+-- e continua recusando opção esgotada.
+select is((select line_total from tablet_item_total(pg_temp.h('fb-a1'), '00000000-0000-4000-8000-0000000003f1', 2,
+  array['00000000-0000-4000-8000-000000000383']::uuid[])), 23.00::numeric,
+  'a prévia de preço aceita grupo obrigatório ainda sem escolha');
+select throws_ok($$ select * from tablet_item_total(pg_temp.h('fb-a1'), '00000000-0000-4000-8000-0000000003f1', 1,
+  array['00000000-0000-4000-8000-000000000381', '00000000-0000-4000-8000-000000000384']::uuid[]) $$, 'JM422', null,
+  'a prévia continua recusando complemento esgotado');
 select throws_ok($$ select tablet_place_order(pg_temp.h('fb-a1'), (select v from ids where k = 's1'), (select v from ids where k = 'tab1'),
   'chave-pedido-9011', '[{"product_id":"00000000-0000-4000-8000-0000000003f1","quantity":1,"option_ids":["00000000-0000-4000-8000-000000000381","00000000-0000-4000-8000-000000000384"]}]') $$,
   'JM422', null, 'complemento esgotado');
