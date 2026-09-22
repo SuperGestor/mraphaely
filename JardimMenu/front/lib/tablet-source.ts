@@ -26,7 +26,7 @@ export const CHAVE_DA_MESA = "jm.mesa";
 export function lerMesaGuardada(): number | null {
   try {
     const valor = typeof window === "undefined" ? null : window.localStorage.getItem(CHAVE_DA_MESA);
-    return valor && /^d{1,4}$/.test(valor) ? Number(valor) : null;
+    return valor && /^\d{1,4}$/.test(valor) ? Number(valor) : null;
   } catch {
     return null;
   }

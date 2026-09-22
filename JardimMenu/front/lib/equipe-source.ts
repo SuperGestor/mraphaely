@@ -74,16 +74,34 @@ const real: EquipeSource = {
 
   assinar(lojaId, aoMudar, aoEstado) {
     const sb = clienteDoNavegador();
-    const canal = sb.channel(`salao:${lojaId}`);
-    for (const tabela of COM_LOJA) {
-      canal.on("postgres_changes", { event: "*", schema: "public", table: tabela, filter: `store_id=eq.${lojaId}` }, aoMudar);
-    }
-    // order_items não tem store_id: a RLS de leitura filtra pela loja do pedido.
-    canal.on("postgres_changes", { event: "*", schema: "public", table: "order_items" }, aoMudar);
-    canal.subscribe((status) => aoEstado(status === "SUBSCRIBED"));
+    let canal: ReturnType<typeof sb.channel> | null = null;
+    let ativo = true;
+
+    // O token do login precisa chegar ao Realtime ANTES de entrar no canal. Sem ele, a
+    // entrada vai como anon, que não lê pedido nenhum (NF-005), e o servidor recusa a
+    // assinatura ("Unable to subscribe to changes"): a tela ficava só na releitura de
+    // segurança. A renovação do token depois disso o supabase-js repassa sozinho.
+    void sb.auth.getSession().then(({ data }) => {
+      if (!ativo) return;
+      const token = data.session?.access_token;
+      if (!token) {
+        aoEstado(false);
+        return;
+      }
+      void sb.realtime.setAuth(token);
+      canal = sb.channel(`salao:${lojaId}`);
+      for (const tabela of COM_LOJA) {
+        canal.on("postgres_changes", { event: "*", schema: "public", table: tabela, filter: `store_id=eq.${lojaId}` }, aoMudar);
+      }
+      // order_items não tem store_id: a RLS de leitura filtra pela loja do pedido.
+      canal.on("postgres_changes", { event: "*", schema: "public", table: "order_items" }, aoMudar);
+      canal.subscribe((status) => aoEstado(status === "SUBSCRIBED"));
+    });
+
     return () => {
+      ativo = false;
       aoEstado(false);
-      void sb.removeChannel(canal);
+      if (canal) void sb.removeChannel(canal);
     };
   },
 };
