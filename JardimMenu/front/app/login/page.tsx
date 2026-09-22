@@ -23,8 +23,9 @@ export default async function LoginPage({
     if (!resultado.ok) {
       redirect(`/login?erro=${encodeURIComponent(resultado.mensagem)}&de=${encodeURIComponent(destino)}`);
     }
-    // Só volta para caminho interno: nada de redirecionar para fora do produto.
-    redirect(destino.startsWith("/admin") ? destino : "/admin");
+    // Só volta para caminho interno da equipe: nada de redirecionar para fora do produto.
+    const interno = /^\/(admin|equipe)(\/|$)/.test(destino);
+    redirect(interno ? destino : "/admin");
   }
 
   return (

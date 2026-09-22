@@ -2,9 +2,9 @@ import { NextResponse } from "next/server";
 import { alterarDispositivo } from "@back/controllers/dispositivos";
 
 /**
- * POST /api/admin/dispositivos/[id]
- * - { "acao": "estado", "status": "active" | "inactive" | "retired" }
- * - { "acao": "novo_codigo" }: novo QR para o tablet que não pareou em 10 minutos
+ * POST /api/admin/dispositivos/[id] com `{ "acao": "estado", "status": "active" | "inactive" |
+ * "retired" }`: desativa, reativa ou aposenta um tablet. Parear é no próprio tablet, com o
+ * login do dono ou do gestor (/api/tablet/configurar).
  */
 export async function POST(request: Request, { params }: { params: Promise<{ id: string }> }) {
   const { id } = await params;
@@ -16,8 +16,7 @@ export async function POST(request: Request, { params }: { params: Promise<{ id:
     return NextResponse.json({ codigo: "JM422", mensagem: "Corpo inválido." }, { status: 422 });
   }
 
-  const origem = process.env.NEXT_PUBLIC_APP_ORIGIN ?? new URL(request.url).origin;
-  const r = await alterarDispositivo(id, corpo, origem);
+  const r = await alterarDispositivo(id, corpo);
   const headers = { "cache-control": "no-store" };
   return r.ok
     ? NextResponse.json(r.dados, { headers })

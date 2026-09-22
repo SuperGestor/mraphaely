@@ -3,10 +3,9 @@
  * lib/database.types.ts a partir do Supabase local, e o schema é a fonte de verdade:
  * coluna renomeada ou removida quebra o `tsc` aqui, e não em produção.
  *
- * O gerador não sabe dizer quatro coisas, e só elas são afinadas à mão:
+ * O gerador não sabe dizer três coisas, e só elas são afinadas à mão:
  * - jsonb (`opening_hours`, `available_window`) ganha o formato fechado `TimeWindow[]`;
  * - text com check (`role`, `status`, `tab_mode`) ganha a união dos valores aceitos;
- * - coluna gerada (`is_paired`) sai anulável no gerador, mas nunca é nula;
  * - retorno de function sai sem nulos no gerador, então `StoreHours` e `Menu` continuam
  *   escritos aqui, com os nomes conferidos contra o banco.
  *
@@ -129,9 +128,8 @@ export interface RuleError {
 }
 
 /* ---------------------------------------------------------------------------
- * Modelos de leitura do painel de configuração. `tables.qr_token`,
- * `devices.token_hash` e `devices.pairing_code_hash` ficam fora do Pick, e nunca
- * aparecem em resposta de API (NF-006).
+ * Modelos de leitura do painel de configuração. `tables.qr_token` e `devices.token_hash`
+ * ficam fora do Pick, e nunca aparecem em resposta de API (NF-006).
  * ------------------------------------------------------------------------- */
 
 export type TableRow = Pick<
@@ -143,13 +141,11 @@ export type DeviceStatus = "active" | "inactive" | "retired";
 
 export type DeviceRow = Pick<
   Linha<"devices">,
-  "id" | "store_id" | "table_id" | "name" | "app_version" | "battery_level" | "last_seen_at" | "pairing_expires_at"
+  "id" | "store_id" | "table_id" | "name" | "app_version" | "battery_level" | "last_seen_at"
 > & {
   /** Número da mesa, resolvido na leitura, para a tela não precisar juntar. */
   table_number: Linha<"tables">["number"] | null;
   status: DeviceStatus;
-  /** Derivado no banco: o tablet já trocou o código pelo token (JM-180). */
-  is_paired: boolean;
 };
 
 export type StoreRole = "owner" | "manager" | "waiter" | "kitchen";

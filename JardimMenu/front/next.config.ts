@@ -1,3 +1,4 @@
+import fs from "node:fs";
 import path from "node:path";
 import type { NextConfig } from "next";
 import withSerwistInit from "@serwist/next";
@@ -22,8 +23,19 @@ const withSerwist = withSerwistInit({
   globPublicPatterns: ["*", "!(mock)/**"],
 });
 
+/**
+ * Versão do app no heartbeat do tablet (JM-184): a do package.json, mais o commit quando o
+ * build vem da Vercel. O admin vê qual versão cada tablet está rodando.
+ */
+const versaoDoApp = (() => {
+  const { version } = JSON.parse(fs.readFileSync(path.join(process.cwd(), "package.json"), "utf8")) as { version: string };
+  const commit = process.env.VERCEL_GIT_COMMIT_SHA?.slice(0, 7);
+  return commit ? `${version}+${commit}` : version;
+})();
+
 const nextConfig: NextConfig = {
   reactStrictMode: true,
+  env: { NEXT_PUBLIC_APP_VERSION: versaoDoApp },
   // D33: o back/ fica ao lado do front/, fora desta pasta, e é importado só no servidor.
   experimental: { externalDir: true },
   webpack(config) {

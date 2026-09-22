@@ -49,12 +49,9 @@ export type Database = {
           app_version: string | null
           battery_level: number | null
           id: string
-          is_paired: boolean | null
           kind: string
           last_seen_at: string | null
           name: string
-          pairing_code_hash: string | null
-          pairing_expires_at: string | null
           provisioned_at: string
           provisioned_by: string | null
           retired_at: string | null
@@ -62,18 +59,15 @@ export type Database = {
           status: string
           store_id: string
           table_id: string | null
-          token_hash: string | null
+          token_hash: string
         }
         Insert: {
           app_version?: string | null
           battery_level?: number | null
           id?: string
-          is_paired?: boolean | null
           kind?: string
           last_seen_at?: string | null
           name: string
-          pairing_code_hash?: string | null
-          pairing_expires_at?: string | null
           provisioned_at?: string
           provisioned_by?: string | null
           retired_at?: string | null
@@ -81,18 +75,15 @@ export type Database = {
           status?: string
           store_id: string
           table_id?: string | null
-          token_hash?: string | null
+          token_hash: string
         }
         Update: {
           app_version?: string | null
           battery_level?: number | null
           id?: string
-          is_paired?: boolean | null
           kind?: string
           last_seen_at?: string | null
           name?: string
-          pairing_code_hash?: string | null
-          pairing_expires_at?: string | null
           provisioned_at?: string
           provisioned_by?: string | null
           retired_at?: string | null
@@ -100,7 +91,7 @@ export type Database = {
           status?: string
           store_id?: string
           table_id?: string | null
-          token_hash?: string | null
+          token_hash?: string
         }
         Relationships: [
           {
@@ -975,6 +966,7 @@ export type Database = {
           opened_by_user: string | null
           status: string
           store_id: string
+          tab_mode: string
           table_id: string
         }
         Insert: {
@@ -988,6 +980,7 @@ export type Database = {
           opened_by_user?: string | null
           status?: string
           store_id: string
+          tab_mode: string
           table_id: string
         }
         Update: {
@@ -1001,6 +994,7 @@ export type Database = {
           opened_by_user?: string | null
           status?: string
           store_id?: string
+          tab_mode?: string
           table_id?: string
         }
         Relationships: [
@@ -1300,26 +1294,6 @@ export type Database = {
           user_id: string
         }[]
       }
-      admin_provision_device: {
-        Args: {
-          p_name: string
-          p_pairing_code_hash: string
-          p_store_id: string
-          p_table_id: string
-        }
-        Returns: {
-          id: string
-          name: string
-          pairing_expires_at: string
-          provisioned_at: string
-          status: string
-          table_id: string
-        }[]
-      }
-      admin_renew_pairing_code: {
-        Args: { p_device_id: string; p_pairing_code_hash: string }
-        Returns: string
-      }
       admin_set_device_status: {
         Args: { p_device_id: string; p_status: string }
         Returns: undefined
@@ -1334,6 +1308,10 @@ export type Database = {
       }
       admin_set_store_user_role: {
         Args: { p_role: string; p_store_user_id: string }
+        Returns: undefined
+      }
+      admin_set_tab_mode: {
+        Args: { p_mode: string; p_store_id: string }
         Returns: undefined
       }
       admin_update_store_appearance: {
@@ -1413,7 +1391,19 @@ export type Database = {
         }
         Returns: string
       }
+      device_heartbeat: {
+        Args: { p_app_version: string; p_battery: number; p_token_hash: string }
+        Returns: undefined
+      }
+      jm_cancel_order: {
+        Args: { p_autor: string; p_order_id: string; p_reason: string }
+        Returns: undefined
+      }
       jm_channel: { Args: { p: number }; Returns: number }
+      jm_close_session_if_empty: {
+        Args: { p_session_id: string }
+        Returns: boolean
+      }
       jm_contrast: { Args: { p_a: string; p_b: string }; Returns: number }
       jm_device_by_hash: {
         Args: { p_token_hash: string }
@@ -1421,12 +1411,9 @@ export type Database = {
           app_version: string | null
           battery_level: number | null
           id: string
-          is_paired: boolean | null
           kind: string
           last_seen_at: string | null
           name: string
-          pairing_code_hash: string | null
-          pairing_expires_at: string | null
           provisioned_at: string
           provisioned_by: string | null
           retired_at: string | null
@@ -1434,7 +1421,7 @@ export type Database = {
           status: string
           store_id: string
           table_id: string | null
-          token_hash: string | null
+          token_hash: string
         }
         SetofOptions: {
           from: "*"
@@ -1443,20 +1430,91 @@ export type Database = {
           isSetofReturn: false
         }
       }
+      jm_item_price: {
+        Args: {
+          p_option_ids: string[]
+          p_product_id: string
+          p_quantity: number
+          p_store_id: string
+        }
+        Returns: {
+          line_total: number
+          option_ids: string[]
+          product_name: string
+          unit_price: number
+          unit_total: number
+        }[]
+      }
       jm_luminance: { Args: { p_hex: string }; Returns: number }
+      jm_reason: { Args: { p_reason: string }; Returns: string }
+      jm_remove_item: {
+        Args: { p_autor: string; p_item_id: string; p_reason: string }
+        Returns: undefined
+      }
       jm_require_role: {
         Args: { p_roles: string[]; p_store_id: string }
         Returns: string
       }
       jm_role: { Args: { p_store_id: string }; Returns: string }
+      jm_session_for_device: {
+        Args: {
+          p_create: boolean
+          p_device: Database["public"]["Tables"]["devices"]["Row"]
+        }
+        Returns: string
+      }
+      jm_session_payload: { Args: { p_session_id: string }; Returns: Json }
       jm_windows_open: {
         Args: { p_now: string; p_tz: string; p_windows: Json }
         Returns: boolean
       }
       jm_windows_valid: { Args: { p_windows: Json }; Returns: boolean }
       shift_date: { Args: { p_store_id: string; ts: string }; Returns: string }
+      staff_ack_waiter_call: { Args: { p_call_id: string }; Returns: undefined }
+      staff_cancel_order: {
+        Args: { p_order_id: string; p_reason: string }
+        Returns: undefined
+      }
+      staff_close_tab: { Args: { p_tab_id: string }; Returns: Json }
+      staff_decide_cancel_request: {
+        Args: { p_approve: boolean; p_note?: string; p_request_id: string }
+        Returns: undefined
+      }
+      staff_floor: { Args: { p_store_id: string }; Returns: Json }
+      staff_force_close_session: {
+        Args: { p_reason: string; p_session_id: string }
+        Returns: undefined
+      }
+      staff_move_tab: {
+        Args: { p_tab_id: string; p_to_table_id: string }
+        Returns: Json
+      }
+      staff_pair_device: {
+        Args: {
+          p_name: string
+          p_store_id: string
+          p_table_id: string
+          p_token_hash: string
+        }
+        Returns: {
+          device_id: string
+          table_number: number
+        }[]
+      }
+      staff_remove_item: {
+        Args: { p_item_id: string; p_reason: string }
+        Returns: undefined
+      }
+      staff_rename_tab: {
+        Args: { p_name: string; p_tab_id: string }
+        Returns: undefined
+      }
       staff_set_product_availability: {
         Args: { p_available: boolean; p_product_id: string }
+        Returns: undefined
+      }
+      staff_set_table_ordering: {
+        Args: { p_enabled: boolean; p_reason?: string; p_table_id: string }
         Returns: undefined
       }
       store_hours_state: {
@@ -1467,6 +1525,11 @@ export type Database = {
           opens_at_local: string
           opens_day_offset: number
         }[]
+      }
+      tablet_call_waiter: { Args: { p_token_hash: string }; Returns: Json }
+      tablet_create_tab: {
+        Args: { p_name: string; p_token_hash: string }
+        Returns: Json
       }
       tablet_item_total: {
         Args: {
@@ -1481,14 +1544,24 @@ export type Database = {
         }[]
       }
       tablet_menu: { Args: { p_token_hash: string }; Returns: Json }
-      tablet_pair_device: {
-        Args: { p_pairing_code_hash: string; p_token_hash: string }
-        Returns: {
-          device_name: string
-          store_name: string
-          store_slug: string
-          table_number: number
-        }[]
+      tablet_open_session: { Args: { p_token_hash: string }; Returns: Json }
+      tablet_place_order: {
+        Args: {
+          p_idempotency_key: string
+          p_items: Json
+          p_session_id: string
+          p_tab_id: string
+          p_token_hash: string
+        }
+        Returns: Json
+      }
+      tablet_reinforce_call: {
+        Args: { p_call_id: string; p_token_hash: string }
+        Returns: Json
+      }
+      tablet_request_cancel: {
+        Args: { p_item_id?: string; p_order_id: string; p_token_hash: string }
+        Returns: Json
       }
       tablet_resolve_device: {
         Args: { p_token_hash: string }
@@ -1499,6 +1572,7 @@ export type Database = {
           table_number: number
         }[]
       }
+      tablet_session_summary: { Args: { p_token_hash: string }; Returns: Json }
       tablet_store_hours: {
         Args: { p_token_hash: string }
         Returns: {

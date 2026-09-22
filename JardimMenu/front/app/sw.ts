@@ -25,10 +25,15 @@ declare global {
 declare const self: ServiceWorkerGlobalScope & { __SW_MANIFEST: (PrecacheEntry | string)[] | undefined };
 
 /**
- * Nunca no cache: tela e dados da equipe, e a tela de pareamento do tablet, cuja URL traz
- * o código de uso único. O NF-004 pede cache só do cardápio do cliente.
+ * Nunca no cache. O NF-004 pede cache só do cardápio do cliente.
+ * - Telas e dados do admin e da equipe, e o login.
+ * - A tela de pareamento do tablet.
+ * - O resumo da mesa (polling de 10 s), o horário e a conferência do pareamento: resposta
+ *   guardada esconderia a falta de rede (JM-012) e mostraria conta velha como atual
+ *   (JM-011). O cardápio (/api/tablet/cardapio) segue pela regra padrão, rede primeiro.
  */
-const ROTAS_SEM_CACHE = /^\/(login|admin|api\/admin)(\/|$)|^\/[^/]+\/tablet\/setup(\/|$)/;
+const ROTAS_SEM_CACHE =
+  /^\/(login|admin|equipe|api\/admin|api\/equipe)(\/|$)|^\/[^/]+\/tablet\/setup(\/|$)|^\/api\/tablet\/(resumo|horario|pareamento)$/;
 
 /** Rede lenta demais: depois deste tempo, a tela abre com a última versão guardada. */
 const ESPERA_DA_REDE_S = 4;
@@ -43,7 +48,7 @@ const serwist = new Serwist({
       // Só pela rede, e esta regra vem primeiro. Com a tela de login no cache, a primeira
       // visita depois de um deploy recebia o HTML anterior, com o identificador antigo da
       // server action, e o login quebrava ("Failed to find Server Action"). Dado do admin
-      // (e-mails, dispositivos) e a URL de pareamento, com o código, também não ficam no
+      // e da equipe (e-mails, dispositivos, pedidos) e a conta da mesa também não ficam no
       // Cache Storage do aparelho.
       matcher: ({ url, sameOrigin }) => sameOrigin && ROTAS_SEM_CACHE.test(url.pathname),
       handler: new NetworkOnly(),
