@@ -79,19 +79,21 @@ export function ErrorState({ onRepetir }: { onRepetir: () => void }) {
 }
 
 /**
- * Sem conexão. Na Fase B esta faixa ganha o número da mesa em fonte grande e o botão
- * de chamar o garçom (JM-185, JM-187). Na Fase A ela só avisa.
+ * Sem conexão (JM-185, JM-012): nenhum pedido sai, e a faixa manda chamar o garçom com o
+ * número da mesa em fonte grande, para o cliente chamar com a voz. O botão de garçom da
+ * tela continua visível (JM-187), e `acao` o repete aqui quando a tela o fornece.
  */
-export function OfflineBanner({ mesa }: { mesa: number | null }) {
+export function OfflineBanner({ mesa, acao }: { mesa: number | null; acao?: React.ReactNode }) {
   return (
     <div
-      className="bg-danger flex items-center justify-between gap-4 px-6 py-3 text-white"
+      className="bg-danger flex flex-wrap items-center justify-between gap-x-6 gap-y-2 px-4 py-3 text-white sm:px-6"
       role="status"
     >
-      <p className="text-base font-semibold">
-        Sem conexão. O cardápio continua navegável.
+      <p className="min-w-0 flex-1 text-base font-semibold sm:text-lg">
+        Sem conexão, chame o garçom. O cardápio continua navegável, mas nenhum pedido sai.
       </p>
-      {mesa !== null ? <p className="text-2xl font-bold tabular-nums">Mesa {mesa}</p> : null}
+      {mesa !== null ? <p className="text-4xl leading-none font-bold tabular-nums sm:text-5xl">Mesa {mesa}</p> : null}
+      {acao}
     </div>
   );
 }

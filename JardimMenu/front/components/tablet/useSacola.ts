@@ -85,10 +85,11 @@ export function useSacola() {
     setItens((atual) => atual.filter((i) => i.chave !== chave));
   }
 
-  function esvaziar() {
+  /** Estável entre renders: a limpeza entre clientes (JM-183) a chama de um callback. */
+  const esvaziar = useCallback(() => {
     versoes.current.clear();
     setItens([]);
-  }
+  }, []);
 
   const quantidade = useMemo(() => itens.reduce((soma, i) => soma + i.quantity, 0), [itens]);
   const total = useMemo(() => somarEmCentavos(itens), [itens]);

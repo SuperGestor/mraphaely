@@ -1,12 +1,14 @@
 import type { Metadata, Viewport } from "next";
 import { MenuScreen } from "@/components/tablet/MenuScreen";
+import { ErroDoTablet } from "@/components/tablet/ErroDoTablet";
 
 /**
  * Rota do cliente, no tablet em modo kiosk (JM-181).
  *
- * Na Fase A a mesa ainda vem por parâmetro, para a rodada de layout. Na etapa seguinte
- * ela é resolvida pelo `device_token` guardado no aparelho, e o parâmetro sai: nenhuma
- * tela do cliente escolhe a própria mesa.
+ * Com banco, a mesa é resolvida pelo `device_token` guardado no aparelho, e o parâmetro
+ * `?mesa=` é ignorado: nenhuma tela do cliente escolhe a própria mesa. O parâmetro só vale
+ * no cardápio de exemplo, para a rodada de layout. A tela inteira fica dentro da barreira
+ * de erro (JM-184), que mostra a mesa e o garçom em vez de tela branca.
  */
 export const metadata: Metadata = { title: "Cardápio" };
 
@@ -20,13 +22,19 @@ export const viewport: Viewport = {
 };
 
 export default async function TabletPage({
+  params,
   searchParams,
 }: {
   params: Promise<{ loja: string }>;
   searchParams: Promise<{ mesa?: string }>;
 }) {
+  const { loja } = await params;
   const { mesa } = await searchParams;
   const numero = mesa && /^\d+$/.test(mesa) ? Number(mesa) : 7;
 
-  return <MenuScreen mesa={numero} />;
+  return (
+    <ErroDoTablet>
+      <MenuScreen loja={loja} mesa={numero} />
+    </ErroDoTablet>
+  );
 }

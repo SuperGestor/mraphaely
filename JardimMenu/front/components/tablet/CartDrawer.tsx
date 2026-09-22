@@ -3,6 +3,8 @@
 import { useEffect, useRef, useState } from "react";
 import { money } from "@/lib/money";
 import { nomesDasOpcoes, QUANTIDADE_MAXIMA, rotuloDeItens, type ItemDaSacola } from "@/lib/sacola";
+import { BotaoGarcom } from "./Garcom";
+import { ChipDaComanda } from "./Comanda";
 
 /**
  * Sacola aberta: ver, mudar quantidade, editar, remover e esvaziar.
@@ -65,12 +67,14 @@ export function CartDrawer({
         onClick={(e) => e.stopPropagation()}
       >
         <header className="border-line flex items-center justify-between gap-4 border-b px-4 py-4 sm:px-6 sm:py-5">
-          <div>
+          <div className="min-w-0 flex-1">
             <h2 id="sacola-titulo" className="text-2xl font-bold">
               Sua sacola
             </h2>
             <p className="text-muted text-sm">{quantidade === 0 ? "Nenhum item" : rotuloDeItens(quantidade)}</p>
+            <ChipDaComanda className="mt-2" />
           </div>
+          <BotaoGarcom compacto />
           <button
             ref={fechar}
             type="button"

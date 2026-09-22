@@ -4,6 +4,8 @@ import { useEffect, useRef, useState } from "react";
 import type { ModoDeEnvio } from "@/lib/menu-source";
 import { money } from "@/lib/money";
 import { nomesDasOpcoes, rotuloDeItens, type ItemDaSacola } from "@/lib/sacola";
+import { BotaoGarcom } from "./Garcom";
+import { ChipDaComanda } from "./Comanda";
 
 /** Limpeza depois do envio: a tela volta ao cardápio em 15 s (JM-183). */
 const SEGUNDOS_ATE_LIMPAR = 15;
@@ -13,8 +15,8 @@ const SEGUNDOS_ATE_LIMPAR = 15;
  * volta para alterar ou confirma.
  *
  * A confirmação trava quando o pedido não pode sair, e diz por quê: sem rede (JM-185),
- * loja fechada (JM-005) ou envio que ainda não existe na fonte real (Fase B). Nunca há
- * confirmação falsa.
+ * loja fechada (JM-005), mesa em contingência (JM-186) ou comanda por escolher (JM-200).
+ * Nunca há confirmação falsa: o que vale é a resposta do banco.
  *
  * No celular abre como folha que sobe do rodapé; em telas maiores, como janela.
  */
@@ -25,6 +27,8 @@ export function OrderReview({
   envio,
   avisoFechado,
   offline,
+  contingencia,
+  semComanda,
   enviando,
   erro,
   onVoltar,
@@ -36,6 +40,8 @@ export function OrderReview({
   envio: ModoDeEnvio;
   avisoFechado: string | null;
   offline: boolean;
+  contingencia: boolean;
+  semComanda: boolean;
   enviando: boolean;
   erro: string | null;
   onVoltar: () => void;
@@ -59,9 +65,8 @@ export function OrderReview({
   const bloqueios = [
     offline ? "Sem conexão. Nenhum pedido sai sem rede: chame o garçom." : null,
     avisoFechado ? `${avisoFechado} O pedido fica disponível no horário da casa.` : null,
-    envio === "fase-b"
-      ? "O envio de pedido pelo tablet chega na próxima etapa. Para pedir agora, chame a equipe."
-      : null,
+    contingencia ? "O pedido por esta mesa está pausado agora. Peça ao garçom." : null,
+    semComanda ? "Escolha a comanda deste pedido." : null,
     total === null ? "Um item está sem preço. Volte e ajuste a sacola." : null,
   ].filter((b): b is string => b !== null);
 
@@ -79,7 +84,9 @@ export function OrderReview({
               Confere seu pedido?
             </h2>
             {envio === "demonstracao" ? <SeloDemonstracao /> : null}
+            <BotaoGarcom compacto className="ml-auto" />
           </div>
+          <ChipDaComanda className="mt-2" />
           <p className="text-muted mt-1 text-base">
             {mesa !== null ? `Mesa ${mesa} · ` : ""}
             {rotuloDeItens(quantidade)}
@@ -152,15 +159,22 @@ export function OrderReview({
   );
 }
 
-/** Pedido que saiu. Volta sozinho ao cardápio em 15 s, ou antes, pelo botão. */
+/**
+ * Pedido que saiu. Volta sozinho ao cardápio em 15 s, ou antes, pelo botão, e a volta é a
+ * limpeza entre clientes (JM-183). Sem status de preparo na primeira versão (D23): a tela
+ * diz só que o pedido foi enviado.
+ */
 export function OrderSent({
   numero,
   mesa,
+  comanda,
   demonstracao,
   onFechar,
 }: {
   numero: number;
   mesa: number | null;
+  /** Nome da comanda, no modo nomeada. */
+  comanda: string | null;
   demonstracao: boolean;
   onFechar: () => void;
 }) {
@@ -199,19 +213,26 @@ export function OrderSent({
         <h2 id="enviado-titulo" className="mt-4 text-2xl font-bold sm:text-3xl">
           Pedido nº {numero} enviado
         </h2>
-        {mesa !== null ? <p className="text-muted mt-2 text-lg">Mesa {mesa}</p> : null}
+        {mesa !== null || comanda ? (
+          <p className="text-muted mt-2 text-lg">
+            {[mesa !== null ? `Mesa ${mesa}` : null, comanda ? `comanda de ${comanda}` : null].filter(Boolean).join(" · ")}
+          </p>
+        ) : null}
         {demonstracao ? (
           <p className="mt-4 text-base">Nada foi enviado à cozinha: este é o cardápio de exemplo.</p>
         ) : null}
         <p className="text-muted mt-6 text-sm">A tela volta ao cardápio em {restante} s.</p>
-        <button
-          ref={botao}
-          type="button"
-          onClick={onFechar}
-          className="jm-touch jm-focus bg-primary mt-4 w-full rounded-full px-8 text-lg font-bold text-white sm:w-auto"
-        >
-          Voltar ao cardápio
-        </button>
+        <div className="mt-4 flex flex-col items-center justify-center gap-3 sm:flex-row">
+          <button
+            ref={botao}
+            type="button"
+            onClick={onFechar}
+            className="jm-touch jm-focus bg-primary w-full rounded-full px-8 text-lg font-bold text-white sm:w-auto"
+          >
+            Voltar ao cardápio
+          </button>
+          <BotaoGarcom />
+        </div>
       </div>
     </div>
   );

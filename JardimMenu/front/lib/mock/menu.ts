@@ -10,6 +10,8 @@ import type {
   Uuid,
 } from "../types";
 import type { MenuSource } from "../menu-source";
+import type { EnvioDoPedido } from "../mesa";
+import { criarMesaDeExemplo } from "./mesa";
 import { PedidoRecusado } from "../sacola";
 
 /**
@@ -223,8 +225,43 @@ function horarioDeExemplo(): StoreHours {
   return hoursFromClock(new Date());
 }
 
-/** Numeração de demonstração, por carregamento da tela. A real é por loja e turno (JM-036). */
-let proximoNumeroDeDemonstracao = 1;
+/**
+ * Dublê de `jm_item_price`: valida a linha como o banco valida (produto ativo e
+ * disponível, quantidade de 1 a 20, complemento válido e disponível, mínimo e máximo do
+ * grupo) e devolve nome, total e complementos. Recusa com os mesmos códigos.
+ */
+function precificar(item: ItemSelection) {
+  const produto = products.find((p) => p.id === item.product_id);
+  if (!produto) throw new PedidoRecusado("JM404", "Um item da sacola saiu do cardápio.");
+  if (!produto.is_available) throw new PedidoRecusado("JM451", `Produto indisponível agora: ${produto.name}.`);
+  if (!Number.isInteger(item.quantity) || item.quantity < 1 || item.quantity > 20) {
+    throw new PedidoRecusado("JM422", "Quantidade fora do limite.");
+  }
+  const opcoes = produto.option_groups.flatMap((g) => g.options.map((o) => ({ ...o, grupo: g.id })));
+  const escolhidas = item.option_ids.map((idDaOpcao) => opcoes.find((o) => o.id === idDaOpcao));
+  if (escolhidas.some((o) => !o || !o.is_available)) {
+    throw new PedidoRecusado("JM422", `Um complemento de ${produto.name} não está disponível.`);
+  }
+  for (const grupo of produto.option_groups) {
+    const n = escolhidas.filter((o) => o?.grupo === grupo.id).length;
+    if (n < grupo.min_select || n > grupo.max_select) {
+      throw new PedidoRecusado("JM422", `Escolha de ${grupo.name} fora do limite em ${produto.name}.`);
+    }
+  }
+  const unitario = produto.price + escolhidas.reduce((soma, o) => soma + (o?.price_delta ?? 0), 0);
+  return {
+    name: produto.name,
+    line_total: Math.round(unitario * item.quantity * 100) / 100,
+    options: escolhidas.map((o) => o?.name ?? "").sort((a, b) => a.localeCompare(b, "pt-BR")),
+  };
+}
+
+const mesa = criarMesaDeExemplo({
+  numeroDaMesa: menu.table_number ?? 7,
+  modoDaLoja: store.tab_mode,
+  lojaAberta: () => horarioDeExemplo().is_open,
+  precificar,
+});
 
 export const mockMenuSource: MenuSource = {
   envio: "demonstracao",
@@ -239,27 +276,48 @@ export const mockMenuSource: MenuSource = {
     return horarioDeExemplo();
   },
 
+  async abrirMesa() {
+    await delay(120);
+    return mesa.abrir();
+  },
+
+  async criarComanda(nome: string) {
+    await delay(200);
+    return mesa.criarComanda(nome);
+  },
+
+  async resumo() {
+    await delay(80);
+    return mesa.resumo();
+  },
+
   /**
-   * Dublê do envio, só para demonstração. Recusa como o banco vai recusar na Fase B:
-   * sacola vazia, loja fechada (JM-005), produto esgotado (JM-004) e quantidade fora do
-   * limite. Não grava, não chama rota e não conta no pixel.
+   * Dublê do envio, só para demonstração. Recusa como o banco recusa: comanda encerrada,
+   * mesa em contingência, loja fechada (JM-005), produto esgotado (JM-004) e quantidade
+   * fora do limite. Não grava, não chama rota e não conta no pixel.
    */
-  async enviarPedido(itens: ItemSelection[]) {
+  async enviarPedido(envio: EnvioDoPedido, chave: string) {
     await delay(450);
-    if (itens.length === 0) throw new PedidoRecusado("SACOLA_VAZIA", "A sacola está vazia.");
-    if (!horarioDeExemplo().is_open) {
-      throw new PedidoRecusado(
-        "LOJA_FECHADA",
-        "A casa está fechada agora. O pedido fica disponível no horário de funcionamento.",
-      );
-    }
-    for (const item of itens) {
-      const produto = products.find((p) => p.id === item.product_id);
-      if (!produto) throw new PedidoRecusado("JM404", "Um item da sacola saiu do cardápio.");
-      if (!produto.is_available) throw new PedidoRecusado("JM451", `Produto indisponível agora: ${produto.name}.`);
-      if (item.quantity < 1 || item.quantity > 20) throw new PedidoRecusado("JM422", "Quantidade fora do limite.");
-    }
-    return { numero: proximoNumeroDeDemonstracao++ };
+    return mesa.enviar(envio, chave);
+  },
+
+  async pedirCancelamento(orderId: Uuid, itemId: Uuid | null) {
+    await delay(200);
+    mesa.pedirCancelamento(orderId, itemId);
+  },
+
+  async chamarGarcom() {
+    await delay(150);
+    return mesa.chamarGarcom();
+  },
+
+  async reforcarChamado(callId: Uuid) {
+    await delay(150);
+    return mesa.reforcar(callId);
+  },
+
+  async heartbeat() {
+    // Sem dispositivo, não há o que informar.
   },
 
   /**

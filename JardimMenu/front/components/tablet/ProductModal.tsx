@@ -7,6 +7,8 @@ import { money, moneyDelta } from "@/lib/money";
 import { registrarEvento } from "@/lib/pixel";
 import { urlDaFoto } from "@/lib/foto";
 import type { EscolhaDoModal } from "@/lib/sacola";
+import { BotaoGarcom } from "./Garcom";
+import { ChipDaComanda } from "./Comanda";
 
 /**
  * Modal de personalização (JM-003). Duas regras que vêm do documento:
@@ -159,15 +161,20 @@ export function ProductModal({
               <p className="text-muted mt-1 text-base">{produto.description}</p>
             ) : null}
             <p className="text-accent mt-2 text-lg font-bold">{money(produto.price)}</p>
+            <ChipDaComanda className="mt-2" />
           </div>
-          <button
-            type="button"
-            onClick={onFechar}
-            aria-label="Fechar"
-            className="jm-touch jm-focus bg-canvas flex shrink-0 items-center justify-center rounded-full px-4 text-xl"
-          >
-            ✕
-          </button>
+          {/* O garçom fica no cabeçalho, que não rola (JM-187). */}
+          <div className="flex shrink-0 items-start gap-2">
+            <BotaoGarcom compacto />
+            <button
+              type="button"
+              onClick={onFechar}
+              aria-label="Fechar"
+              className="jm-touch jm-focus bg-canvas flex shrink-0 items-center justify-center rounded-full px-4 text-xl"
+            >
+              ✕
+            </button>
+          </div>
         </header>
 
         <div className="flex-1 overflow-y-auto p-4 sm:p-6">
