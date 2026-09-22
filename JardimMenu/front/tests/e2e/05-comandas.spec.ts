@@ -70,15 +70,24 @@ test("E2E-23: no modo nomeada, o primeiro pedido exige comanda, nome repetido é
   await expect(revisao).toContainText("Pedindo como: Bruno");
   await revisao.getByRole("button", { name: "Confirmar pedido" }).click();
   await expect(tablet.getByText("comanda de Bruno")).toBeVisible();
+  await tablet.getByRole("button", { name: "Voltar ao cardápio" }).click();
 
-  // "Minha comanda" é a do Bruno enquanto ele não sai; "Conta da mesa" soma as duas (JM-203).
+  // Depois do envio, a limpeza zera a comanda ativa (JM-201): "Minha comanda" fica vazia até
+  // a próxima pessoa escolher a sua. A "Conta da mesa" soma as duas comandas (JM-203).
   const conta = await abrirConta(tablet);
-  await expect(conta).toContainText("1× Bolinho de mandioca");
-  await expect(conta).toContainText("R$ 32,00");
+  await expect(conta).toContainText("Nenhuma comanda escolhida.");
   await conta.getByRole("tab", { name: "Conta da mesa" }).click();
   await expect(conta).toContainText("Ana");
   await expect(conta).toContainText("Bruno");
   await expect(conta).toContainText("R$ 48,00");
+
+  // Escolhida de novo a comanda do Bruno, "Minha comanda" mostra só o que é dele.
+  await conta.getByRole("tab", { name: "Minha comanda" }).click();
+  await conta.getByRole("button", { name: "Escolher comanda" }).click();
+  await tablet.getByRole("dialog", { name: "Trocar de comanda" }).getByRole("button", { name: "Bruno", exact: true }).click();
+  await expect(conta).toContainText("1× Bolinho de mandioca");
+  await expect(conta).toContainText("R$ 32,00");
+  await expect(conta).not.toContainText("Chopp Pilsen da casa");
 });
 
 test("E2E-26: comanda migra para mesa livre, nome repetido no destino é recusado, encerrada não migra, e a origem fecha", async ({ browser }) => {
@@ -113,6 +122,9 @@ test("E2E-26: comanda migra para mesa livre, nome repetido no destino é recusad
   const idDaAna = mesa9.session.tabs.find((t: { name: string }) => t.name === "Ana").id;
   await detalhe.locator("section").filter({ hasText: /^Ana/ }).getByRole("button", { name: "Encerrar comanda" }).click();
   await equipe.getByRole("dialog", { name: /Encerrar a comanda Ana/ }).getByRole("button", { name: "Encerrar" }).click();
+  // A comanda só está encerrada quando sai da tela; antes disso, migrar seria recusado por
+  // nome repetido (JMT04), e não por comanda encerrada (JMT02).
+  await expect(detalhe.locator("section").filter({ hasText: /^Ana/ })).toHaveCount(0);
   const mesa10 = antes.tables.find((m: { number: number }) => m.number === 10);
   const encerrada = await equipe.request.post("/api/equipe/migrar_comanda", { data: { tab_id: idDaAna, mesa_id: mesa10.id } });
   expect(encerrada.status()).toBe(409);

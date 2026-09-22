@@ -47,6 +47,8 @@ test("E2E-05: a mesma chave 3x dá 1 pedido; em outra abertura, é outro pedido 
   const detalhe = await abrirMesaNaEquipe(equipe, 3);
   await detalhe.getByRole("button", { name: "Encerrar conta" }).click();
   await equipe.getByRole("dialog", { name: /Encerrar a conta/ }).getByRole("button", { name: "Encerrar" }).click();
+  // Só depois que a mesa fica livre é que a abertura seguinte é outra (a tela avisa).
+  await expect(equipe.getByRole("status").filter({ hasText: "A mesa ficou livre." })).toBeVisible();
 
   const s2 = await abrir(request, t);
   expect(s2.session_id).not.toBe(s1.session_id);
@@ -99,7 +101,8 @@ test("E2E-20/22: token sobrevive a reinício; reparear aposenta o anterior; inv�
 
   // A tela do tablet aposentado manda chamar a equipe, com a mesa em destaque (JM-181).
   await tablet.reload();
-  await expect(tablet.getByText("Chame a equipe")).toBeVisible();
+  await expect(tablet.getByText("Chame a equipe", { exact: true })).toBeVisible();
+  await expect(tablet.getByText("Este tablet foi substituído. Chame a equipe.")).toBeVisible();
   await expect(tablet.getByText("Mesa 6").first()).toBeVisible();
   await expect(tablet.getByRole("button", { name: "Chamar garçom" })).toBeVisible();
   await expect(tablet.getByRole("link", { name: "Parear este tablet" })).toHaveAttribute("href", `/${LOJA}/tablet/setup`);

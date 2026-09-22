@@ -58,7 +58,9 @@ test("E2E-04: produto indisponível no meio da sessão fica esmaecido em até 10
     await tablet.getByRole("button", { name: "Ver pedido" }).click();
     await tablet.getByRole("button", { name: "Finalizar pedido" }).click();
     await tablet.getByRole("button", { name: "Confirmar pedido" }).click();
-    await expect(tablet.getByRole("alert")).toContainText("Produto indisponível agora: Pão de fermentação natural.");
+    // Dentro da revisão: o Next também tem um role="alert" (o anunciador de rota).
+    const revisao = tablet.getByRole("dialog", { name: "Confere seu pedido?" });
+    await expect(revisao.getByRole("alert")).toContainText("Produto indisponível agora: Pão de fermentação natural.");
   } finally {
     await admin.getByRole("switch", { name: "Disponibilidade de Pão de fermentação natural" }).click();
   }
