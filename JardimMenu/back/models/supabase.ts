@@ -41,6 +41,27 @@ export async function clienteDaEquipe() {
 }
 
 /**
+ * Cliente de login avulso, com os cookies num pote em memória que morre com a requisição.
+ * É o do pareamento do tablet (decisão de 21/09/2026): o dono ou o gestor entra pelo
+ * servidor, o pareamento é gravado sob o login dele, e nenhum cookie da equipe chega ao
+ * navegador do tablet.
+ */
+export function clienteDeLoginAvulso() {
+  const pote = new Map<string, string>();
+  return createServerClient(variavel("NEXT_PUBLIC_SUPABASE_URL"), variavel("NEXT_PUBLIC_SUPABASE_ANON_KEY"), {
+    cookies: {
+      getAll: () => [...pote].map(([name, value]) => ({ name, value })),
+      setAll: (lista: { name: string; value: string; options: CookieOptions }[]) => {
+        for (const { name, value } of lista) {
+          if (value) pote.set(name, value);
+          else pote.delete(name);
+        }
+      },
+    },
+  });
+}
+
+/**
  * Cliente anônimo, para as functions do tablet e do pixel. Sem sessão e sem cookie: o
  * tablet não é usuário do Supabase, e quem prova presença é o hash do device_token.
  */

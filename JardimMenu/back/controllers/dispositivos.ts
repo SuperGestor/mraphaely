@@ -1,153 +1,112 @@
-import QRCode from "qrcode";
 import { z } from "zod";
-import { clienteAnonimo, clienteDaEquipe, supabaseConfigurado } from "../models/supabase";
+import { clienteDaEquipe, clienteDeLoginAvulso, supabaseConfigurado } from "../models/supabase";
 import { gerarTokenDeDispositivo, hashDoToken } from "../services/device-token";
 import { traduzErro, type ErroDeRegra } from "../errors";
 
 /**
- * Dispositivos (JM-180), com pareamento por código de uso único (decisão de 14/09/2026).
+ * Dispositivos (JM-180), com pareamento por login da equipe no próprio tablet (decisão de
+ * 21/09/2026, que substituiu o código de uso único e o QR de configuração).
  *
- * 1. O gestor provisiona: nasce o dispositivo com um CÓDIGO que vale 10 minutos e uma
- *    leitura. O QR de configuração carrega a URL de pareamento com esse código.
- * 2. O tablet lê o QR com a própria câmera, e a tela de pareamento troca o código pelo
- *    token permanente. O token só existe no corpo dessa resposta, uma única vez.
- *
- * O banco nunca vê nem o código nem o token em claro: só o sha256 dos dois.
+ * 1. No tablet, o dono ou o gestor abre "Configurar este tablet", entra com e-mail e senha
+ *    e informa a mesa.
+ * 2. O servidor faz o login num cliente de cookies em memória, grava o pareamento sob esse
+ *    login e encerra a sessão na mesma requisição: nenhum cookie da equipe chega ao tablet.
+ * 3. O token em claro existe uma única vez, no corpo desta resposta. O banco guarda só o
+ *    sha256 dele.
  */
 export type Resultado<T> = { ok: true; dados: T } | { ok: false; erro: ErroDeRegra };
 
 const SEM_BANCO: ErroDeRegra = { status: 503, codigo: "JM503", mensagem: "Banco indisponível neste ambiente." };
 const ENTRADA_INVALIDA: ErroDeRegra = { status: 422, codigo: "JM422", mensagem: "Dados inválidos." };
+// A mesma mensagem para e-mail inexistente e senha errada: responder diferente diria a um
+// estranho quais e-mails têm conta.
+const LOGIN_INVALIDO: ErroDeRegra = { status: 401, codigo: "JM401", mensagem: "E-mail ou senha inválidos." };
 
-interface Pareamento {
-  qr: string;
-  url: string;
-  expiraEm: string;
-}
-
-async function montarPareamento(origem: string, slug: string, codigo: string, expiraEm: string): Promise<Pareamento> {
-  const url = `${origem}/${slug}/tablet/setup?codigo=${codigo}`;
-  const qr = await QRCode.toDataURL(url, { margin: 1, width: 360, errorCorrectionLevel: "M" });
-  return { qr, url, expiraEm };
-}
-
-async function slugDaLoja(storeId: string): Promise<string | null> {
-  const supabase = await clienteDaEquipe();
-  const { data } = await supabase.from("stores").select("slug").eq("id", storeId).maybeSingle();
-  return data?.slug ?? null;
-}
-
-const Provisionar = z.strictObject({
-  store_id: z.uuid(),
-  table_id: z.uuid(),
-  name: z.string().trim().min(1).max(40),
+const Estado = z.strictObject({
+  acao: z.literal("estado"),
+  status: z.enum(["active", "inactive", "retired"]),
 });
 
-export async function provisionarDispositivo(
-  corpo: unknown,
-  origem: string,
-): Promise<Resultado<{ dispositivo: Record<string, unknown>; pareamento: Pareamento }>> {
-  if (!supabaseConfigurado()) return { ok: false, erro: SEM_BANCO };
-  const entrada = Provisionar.safeParse(corpo);
-  if (!entrada.success) return { ok: false, erro: ENTRADA_INVALIDA };
-
-  const codigo = gerarTokenDeDispositivo();
-  const supabase = await clienteDaEquipe();
-  const { data, error } = await supabase.rpc("admin_provision_device", {
-    p_store_id: entrada.data.store_id,
-    p_table_id: entrada.data.table_id,
-    p_name: entrada.data.name,
-    p_pairing_code_hash: hashDoToken(codigo),
-  });
-  if (error) return { ok: false, erro: traduzErro(error) };
-
-  const linha = (Array.isArray(data) ? data[0] : null) as Record<string, unknown> | null;
-  const slug = await slugDaLoja(entrada.data.store_id);
-  if (!linha || !slug) return { ok: false, erro: traduzErro(null) };
-
-  return {
-    ok: true,
-    dados: {
-      dispositivo: linha,
-      pareamento: await montarPareamento(origem, slug, codigo, String(linha.pairing_expires_at)),
-    },
-  };
-}
-
-const Acao = z.discriminatedUnion("acao", [
-  z.strictObject({ acao: z.literal("estado"), status: z.enum(["active", "inactive", "retired"]) }),
-  z.strictObject({ acao: z.literal("novo_codigo") }),
-]);
-
-export async function alterarDispositivo(
-  deviceId: string,
-  corpo: unknown,
-  origem: string,
-): Promise<Resultado<{ pareamento?: Pareamento }>> {
+/** Desativa, reativa ou aposenta um tablet (admin, dono ou gestor). */
+export async function alterarDispositivo(deviceId: string, corpo: unknown): Promise<Resultado<Record<string, never>>> {
   if (!supabaseConfigurado()) return { ok: false, erro: SEM_BANCO };
   if (!z.uuid().safeParse(deviceId).success) return { ok: false, erro: ENTRADA_INVALIDA };
-  const entrada = Acao.safeParse(corpo);
+  const entrada = Estado.safeParse(corpo);
   if (!entrada.success) return { ok: false, erro: ENTRADA_INVALIDA };
 
   const supabase = await clienteDaEquipe();
-
-  if (entrada.data.acao === "estado") {
-    const { error } = await supabase.rpc("admin_set_device_status", {
-      p_device_id: deviceId,
-      p_status: entrada.data.status,
-    });
-    return error ? { ok: false, erro: traduzErro(error) } : { ok: true, dados: {} };
-  }
-
-  const codigo = gerarTokenDeDispositivo();
-  const { data: expira, error } = await supabase.rpc("admin_renew_pairing_code", {
+  const { error } = await supabase.rpc("admin_set_device_status", {
     p_device_id: deviceId,
-    p_pairing_code_hash: hashDoToken(codigo),
+    p_status: entrada.data.status,
   });
-  if (error) return { ok: false, erro: traduzErro(error) };
-
-  const { data: dispositivo } = await supabase.from("devices").select("store_id").eq("id", deviceId).maybeSingle();
-  const slug = dispositivo ? await slugDaLoja(dispositivo.store_id) : null;
-  if (!slug) return { ok: false, erro: traduzErro(null) };
-
-  return { ok: true, dados: { pareamento: await montarPareamento(origem, slug, codigo, String(expira)) } };
+  return error ? { ok: false, erro: traduzErro(error) } : { ok: true, dados: {} };
 }
 
-const Parear = z.strictObject({ codigo: z.string().regex(/^[A-Za-z0-9_-]{22}$/) });
+const Configurar = z.strictObject({
+  loja: z.string().regex(/^[a-z0-9-]{2,40}$/),
+  email: z.email().max(254),
+  senha: z.string().min(8).max(128),
+  mesa: z.number().int().min(1).max(9999),
+  nome: z.string().trim().min(1).max(40).optional(),
+});
+
+export interface TabletConfigurado {
+  token: string;
+  loja: string;
+  nomeDaLoja: string;
+  mesa: number;
+}
 
 /**
- * A troca do código pelo token. Chamada pelo tablet, sem login: quem autoriza é o código.
- * Esta é a ÚNICA resposta do sistema que carrega o token em claro.
+ * Pareia o tablet com o login do dono ou do gestor. Chamada pelo tablet, sem cookie: quem
+ * autoriza é o login da equipe, informado na própria tela.
  */
-export async function parearDispositivo(
-  corpo: unknown,
-): Promise<Resultado<{ token: string; loja: string; nomeDaLoja: string; mesa: number | null }>> {
+export async function configurarTablet(corpo: unknown): Promise<Resultado<TabletConfigurado>> {
   if (!supabaseConfigurado()) return { ok: false, erro: SEM_BANCO };
-  const entrada = Parear.safeParse(corpo);
-  if (!entrada.success) {
-    return { ok: false, erro: { status: 401, codigo: "JM401", mensagem: "Código de pareamento inválido ou vencido." } };
+  const entrada = Configurar.safeParse(corpo);
+  if (!entrada.success) return { ok: false, erro: ENTRADA_INVALIDA };
+  const { loja, email, senha, mesa, nome } = entrada.data;
+
+  const supabase = clienteDeLoginAvulso();
+  const { error: erroDoLogin } = await supabase.auth.signInWithPassword({ email, password: senha });
+  if (erroDoLogin) return { ok: false, erro: LOGIN_INVALIDO };
+
+  try {
+    // A RLS só mostra a loja a quem é da equipe dela.
+    const { data: aLoja } = await supabase.from("stores").select("id, slug, name").eq("slug", loja).maybeSingle();
+    if (!aLoja) {
+      return { ok: false, erro: { status: 403, codigo: "JM403", mensagem: "Este login não é da equipe desta loja." } };
+    }
+
+    const { data: aMesa } = await supabase
+      .from("tables")
+      .select("id, number")
+      .eq("store_id", aLoja.id)
+      .eq("number", mesa)
+      .eq("is_active", true)
+      .maybeSingle();
+    if (!aMesa) {
+      return { ok: false, erro: { status: 404, codigo: "JM404", mensagem: `A mesa ${mesa} não existe nesta loja.` } };
+    }
+
+    const token = gerarTokenDeDispositivo();
+    const { error } = await supabase.rpc("staff_pair_device", {
+      p_store_id: aLoja.id,
+      p_table_id: aMesa.id,
+      p_name: nome ?? `Tablet mesa ${aMesa.number}`,
+      p_token_hash: hashDoToken(token),
+    });
+    if (error) {
+      const erro = traduzErro(error);
+      return {
+        ok: false,
+        erro: erro.codigo === "JM403" ? { ...erro, mensagem: "Só o dono ou o gestor pareia tablet." } : erro,
+      };
+    }
+
+    return { ok: true, dados: { token, loja: aLoja.slug, nomeDaLoja: aLoja.name, mesa: aMesa.number } };
+  } finally {
+    // Encerra só esta sessão: o login do gestor no celular dele continua valendo.
+    await supabase.auth.signOut({ scope: "local" });
   }
-
-  const token = gerarTokenDeDispositivo();
-  const { data, error } = await clienteAnonimo().rpc("tablet_pair_device", {
-    p_pairing_code_hash: hashDoToken(entrada.data.codigo),
-    p_token_hash: hashDoToken(token),
-  });
-  if (error) {
-    const erro = traduzErro(error);
-    return {
-      ok: false,
-      erro: erro.codigo === "JM401" ? { ...erro, mensagem: "Código de pareamento inválido ou vencido." } : erro,
-    };
-  }
-
-  const linha = (Array.isArray(data) ? data[0] : null) as
-    | { store_slug: string; store_name: string; table_number: number | null }
-    | null;
-  if (!linha) return { ok: false, erro: traduzErro(null) };
-
-  return {
-    ok: true,
-    dados: { token, loja: linha.store_slug, nomeDaLoja: linha.store_name, mesa: linha.table_number },
-  };
 }

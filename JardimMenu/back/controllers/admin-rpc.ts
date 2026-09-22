@@ -85,6 +85,16 @@ const SCHEMAS = {
     p_product_id: uuid,
     p_available: z.boolean(),
   }),
+  // Modo de comanda da loja (JM-200) e contingência por mesa (JM-186): dono e gestor.
+  admin_set_tab_mode: z.strictObject({
+    p_store_id: uuid,
+    p_mode: z.enum(["mesa_unica", "nomeada"]),
+  }),
+  staff_set_table_ordering: z.strictObject({
+    p_table_id: uuid,
+    p_enabled: z.boolean(),
+    p_reason: z.string().trim().min(1).max(140).nullable(),
+  }),
 } as const;
 
 export type FunctionDoAdmin = keyof typeof SCHEMAS;

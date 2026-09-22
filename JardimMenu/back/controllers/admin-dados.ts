@@ -5,9 +5,9 @@ import { traduzErro, type ErroDeRegra } from "../errors";
 /**
  * Leitura do admin, sob o login do usuário e a RLS (§8 do plano de schema).
  *
- * As colunas são sempre listadas uma a uma, nunca `*`: `devices.token_hash`,
- * `devices.pairing_code_hash` e `tables.qr_token` não têm privilégio de leitura, e um
- * `select *` falharia em vez de vazar. Listar é o que deixa isso explícito (NF-006).
+ * As colunas são sempre listadas uma a uma, nunca `*`: `devices.token_hash` e
+ * `tables.qr_token` não têm privilégio de leitura, e um `select *` falharia em vez de
+ * vazar. Listar é o que deixa isso explícito (NF-006).
  */
 export type Resultado<T> = { ok: true; dados: T } | { ok: false; erro: ErroDeRegra };
 
@@ -16,7 +16,7 @@ const LOJA_INVALIDA: ErroDeRegra = { status: 422, codigo: "JM422", mensagem: "Lo
 
 const COLUNAS_DA_MESA = "id, store_id, number, label, is_active, ordering_enabled, created_at";
 const COLUNAS_DO_DISPOSITIVO =
-  "id, store_id, table_id, name, kind, status, app_version, battery_level, last_seen_at, provisioned_at, retired_at, is_paired, pairing_expires_at";
+  "id, store_id, table_id, name, kind, status, app_version, battery_level, last_seen_at, provisioned_at, retired_at";
 
 export async function lerDadosDoAdmin(recurso: string, lojaId: string | null): Promise<Resultado<unknown>> {
   if (!supabaseConfigurado()) return { ok: false, erro: SEM_BANCO };
