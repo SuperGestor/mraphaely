@@ -57,10 +57,16 @@ Sete consequências que governam todo o código:
 
 ## Fase atual
 
-**Fase A: fundação, cardápio e admin.** É marco interno, não subida a produção.
+**Fase B: pedido, tela da equipe e comandas** (prompt 3). A Fase A está fechada e é marco
+interno, não subida a produção.
 
-A primeira subida acontece no fim da **Fase B**, com o pedido funcionando (D16). Não
-anuncie "produção" antes disso.
+A primeira subida acontece no fim da **Fase B**, com o pedido funcionando (D16), depois do
+OK do dono do produto. Não anuncie "produção" antes disso.
+
+**Decisões de 21/09/2026:** fechar todas as fases, parando e reportando ao fim de cada
+prompt; **o piloto (Fase D) começa com um aparelho só**, e mais aparelhos entram se ele
+passar; **a integração com o PDV segue em pausa**; hospedagem em Supabase Cloud e Vercel,
+com as contas criadas pelo dono do produto.
 
 Requisitos da Fase A: `JM-001..009`, `JM-190`, `JM-050..052`, `JM-055`, `JM-060..064`,
 `JM-180`, `NF-001`, `NF-004`, `NF-005`, `NF-006`, `NF-007`, `NF-008`, `NF-009`,
@@ -82,15 +88,19 @@ Módulo N, a Fase B leva JM-200 a JM-203, JM-208 e JM-209.
 
 ## As seis regras invioláveis
 
-1. **Nenhuma escrita de cliente sem `device_token` verificado no servidor.** Na Fase A,
-   `/api/orders` e `/api/staff/orders` não existem e retornam 404, e o único caminho de
-   escrita anônima é `/api/track`. Se ligar o pedido parecer conveniente, **pare e
-   pergunte**.
+1. **Nenhuma escrita de cliente sem `device_token` verificado no servidor.** Na Fase B,
+   `/api/orders` e as rotas `/api/tablet/*` exigem `X-Device-Token`, conferido na
+   function do banco, e o pedido exige `Idempotency-Key`. `/api/staff/orders` só nasce na
+   Fase C (JM-110). O único caminho de escrita anônima é `/api/track`. O pareamento do
+   tablet não é anônimo: exige o login do dono ou do gestor no corpo da requisição.
 2. **RLS ativa em toda tabela, sem policy de INSERT para `anon`** (NF-005). Toda tabela
    nova nasce com `enable row level security` no próprio DDL.
 3. **Nenhum segredo enumerável por API** (NF-006). `devices.token_hash` fica fora de
    toda view e resposta. O token em claro existe uma única vez, na resposta do
-   provisionamento, e nunca em URL, log ou outra resposta.
+   pareamento, e nunca em URL, log ou outra resposta. Desde 21/09/2026 o pareamento é
+   feito no próprio tablet (`/[loja]/tablet/setup`), com o login do dono ou do gestor,
+   sem QR e sem código; o login é encerrado no servidor e nenhum cookie da equipe fica no
+   aparelho (JM-180 revisto).
 4. **`service_role` nunca faz escrita de domínio e nunca aparece sob `NEXT_PUBLIC_`**
    (§4 regra 3). Há teste de grep do bundle publicado na §9.4.
 5. **Fuso horário e fronteira de turno sempre no banco** (D12, função `shift_date`).
@@ -106,9 +116,10 @@ Módulo N, a Fase B leva JM-200 a JM-203, JM-208 e JM-209.
 - Supabase: Postgres, Auth, Storage, Realtime
 - `@supabase/ssr` com `createServerClient` para o login do admin, com a chave `anon`
   sob RLS. **Não** usar `auth-helpers`, descontinuado
-- `qrcode` para gerar o **QR de configuração do dispositivo** e, na Fase C, o QR da
-  plaquinha da mesa. `jsQR` **não** é necessário: nenhuma tela do produto lê QR pela
-  câmera, quem lê a plaquinha é o app de câmera do próprio celular do cliente
+- `qrcode` para o QR da plaquinha da mesa, na Fase C. O tablet não usa mais QR de
+  configuração: o pareamento é pelo login, no próprio aparelho (21/09/2026). `jsQR` **não**
+  é necessário: nenhuma tela do produto lê QR pela câmera, quem lê a plaquinha é o app de
+  câmera do próprio celular do cliente
 - Serwist para o service worker (NF-004). **Não** `next-pwa`, parado para App Router
 - zod em toda fronteira de entrada
 - Vitest, Playwright, pgTAP
@@ -131,8 +142,10 @@ para aritmética de fuso · `float` para dinheiro (`numeric(10,2)` no banco,
 
 O tablet **não** é usuário autenticado do Supabase, então não assina `postgres_changes`:
 a RLS bloquearia, e afrouxá-la violaria a regra 2. Na Fase 1 o tablet usa **polling de
-10s** em `/api/sessions/[id]/summary`, que autentica por `device_token`. Realtime só
-nas telas de equipe, que são autenticadas. Está na §8.6 do documento.
+10s** em `/api/tablet/resumo`, que autentica por `device_token`. Realtime só nas
+telas de equipe, que são autenticadas. Está na §8.6 do documento. Na tela da equipe, o
+evento do Realtime só avisa que algo mudou: ela relê o retrato inteiro por `staff_floor`,
+com uma releitura de segurança a cada 10 s quando o Realtime cai (NF-003).
 
 Os 10s são o **modo normal**, e não um plano B: os critérios de 2s que a v1.7 tinha no
 tablet passaram a 10s (P7). A tela da equipe fica em 2s, com Realtime, e **precisa
