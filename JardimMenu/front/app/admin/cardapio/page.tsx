@@ -6,10 +6,13 @@ import { useAdmin } from "@/components/admin/AdminContext";
 import { money } from "@/lib/money";
 import { urlDaFoto } from "@/lib/foto";
 import { Badge, Button, Cell, Field, Hint, PageHeader, Panel, Row, Switch, Table, TextInput } from "@/components/admin/ui";
+import { EditorDeJanela } from "@/components/admin/EditorDeJanela";
+import { lerJanela, primeiroProblemaDaJanela } from "@/lib/janela-do-produto";
 
 /**
  * Cardápio (JM-050): categorias e produtos, com disponibilidade em 1 toque (JM-004),
- * código do PDV (JM-190), grupos de complemento do produto e foto (JM-002).
+ * código do PDV (JM-190), grupos de complemento do produto, foto (JM-002) e horário do
+ * produto, almoço x jantar (JM-006).
  *
  * Toda gravação é uma function do banco, que confere papel, loja e formato. O que a tela
  * valida é só conforto; a regra está lá.
@@ -41,6 +44,12 @@ export default function AdminCardapio() {
   const [novaCategoria, setNovaCategoria] = useState("");
   const [rascunho, setRascunho] = useState<Rascunho | null>(null);
   const [salvando, setSalvando] = useState(false);
+  // A recusa ao gravar o produto aparece junto do botão, e não no topo: no celular o
+  // formulário é comprido, e o aviso lá em cima ficaria fora da tela de quem tocou.
+  const [erroDoProduto, setErroDoProduto] = useState<string | null>(null);
+  // Cada abertura do formulário remonta o editor de horário, para as faixas guardadas de
+  // um produto não vazarem para o próximo.
+  const [abertura, setAbertura] = useState(0);
 
   const carregar = useCallback(() => {
     source
@@ -51,7 +60,11 @@ export default function AdminCardapio() {
 
   useEffect(carregar, [carregar]);
 
-  async function executar(acao: () => Promise<unknown>, sucesso?: string): Promise<boolean> {
+  async function executar(
+    acao: () => Promise<unknown>,
+    sucesso?: string,
+    mostrarErro: (mensagem: string) => void = setAviso,
+  ): Promise<boolean> {
     setAviso(null);
     try {
       await acao();
@@ -59,7 +72,7 @@ export default function AdminCardapio() {
       carregar();
       return true;
     } catch (e: unknown) {
-      setAviso(mensagemDe(e));
+      mostrarErro(mensagemDe(e));
       return false;
     }
   }
@@ -98,6 +111,8 @@ export default function AdminCardapio() {
       setAviso("Crie uma categoria antes do primeiro produto.");
       return;
     }
+    setErroDoProduto(null);
+    setAbertura((n) => n + 1);
     setRascunho({
       id: null,
       category_id: dados.categorias[0].id,
@@ -117,6 +132,8 @@ export default function AdminCardapio() {
 
   function editar(p: ProdutoAdmin) {
     if (!dados) return;
+    setErroDoProduto(null);
+    setAbertura((n) => n + 1);
     setRascunho({
       id: p.id,
       category_id: p.category_id,
@@ -132,16 +149,27 @@ export default function AdminCardapio() {
         .filter((l) => l.product_id === p.id)
         .sort((a, b) => a.sort_order - b.sort_order)
         .map((l) => l.group_id),
-      available_window: p.available_window,
+      // O jsonb do banco passa pelo zod de lib/janela-do-produto.ts: dia em texto vira
+      // número e chave a mais sai, senão o zod estrito do servidor recusaria a volta sem o
+      // gestor ter mexido no horário.
+      available_window: lerJanela(p.available_window),
       photo_path: p.photo_path,
     });
   }
 
   async function salvarProduto() {
     if (!rascunho) return;
+    setErroDoProduto(null);
     const preco = Number(rascunho.price.replace(",", "."));
     if (!rascunho.name.trim() || !Number.isFinite(preco) || preco < 0) {
-      setAviso("Nome e preço válido são obrigatórios.");
+      setErroDoProduto("Nome e preço válido são obrigatórios.");
+      return;
+    }
+    // Conforto: aponta a faixa errada antes de ir ao servidor. A regra de verdade é a do
+    // banco (jm_windows_valid), e a recusa dele, se vier, aparece no mesmo lugar.
+    const problemaDaJanela = primeiroProblemaDaJanela(rascunho.available_window);
+    if (problemaDaJanela) {
+      setErroDoProduto(`Horário do produto. ${problemaDaJanela}`);
       return;
     }
     setSalvando(true);
@@ -155,14 +183,15 @@ export default function AdminCardapio() {
         p_price: Math.round(preco * 100) / 100,
         p_emoji: rascunho.emoji.trim() || null,
         p_is_featured: rascunho.is_featured,
-        // A janela por produto (JM-006) é preservada como está; o editor dela vem depois.
+        // Janela por produto (JM-006): nulo é sempre disponível; a lista vai como o editor
+        // montou, em hora local da loja, e o banco confere o formato de novo.
         p_available_window: rascunho.available_window,
         p_pdv_code: rascunho.pdv_code.trim() || null,
         p_sort_order: Math.max(0, Math.floor(Number(rascunho.sort_order) || 0)),
         p_is_active: rascunho.is_active,
       });
       await source.rpc("admin_set_product_groups", { p_product_id: String(id), p_group_ids: rascunho.grupos });
-    }, rascunho.id ? "Produto salvo." : "Produto criado.");
+    }, rascunho.id ? "Produto salvo." : "Produto criado.", setErroDoProduto);
     setSalvando(false);
     if (ok) setRascunho(null);
   }
@@ -187,7 +216,7 @@ export default function AdminCardapio() {
     <>
       <PageHeader
         titulo="Cardápio"
-        descricao="Categorias e produtos, com preço, código no PDV, complementos, foto e disponibilidade do dia."
+        descricao="Categorias e produtos, com preço, código no PDV, complementos, foto, horário do produto e disponibilidade do dia."
         acao={
           <div className="flex w-full items-center gap-3 sm:w-auto">
             <div className="min-w-0 flex-1 sm:w-64 sm:flex-none">
@@ -257,6 +286,12 @@ export default function AdminCardapio() {
             </div>
           </div>
 
+          <EditorDeJanela
+            key={abertura}
+            valor={rascunho.available_window}
+            onChange={(v) => setRascunho((r) => (r ? { ...r, available_window: v } : r))}
+          />
+
           <Field rotulo="Grupos de complemento" ajuda="Na ordem em que aparecem no modal do tablet.">
             <div className="flex flex-wrap gap-2">
               {dados?.grupos.map((g) => {
@@ -310,7 +345,13 @@ export default function AdminCardapio() {
             <Hint>A foto é enviada depois que o produto existe: salve primeiro.</Hint>
           )}
 
-          <div className="mt-6 flex gap-3">
+          {erroDoProduto ? (
+            <p className="text-danger mt-6 text-sm font-semibold" role="alert">
+              {erroDoProduto}
+            </p>
+          ) : null}
+
+          <div className="mt-6 flex flex-wrap gap-3">
             <Button onClick={salvarProduto} disabled={salvando}>
               {salvando ? "Salvando…" : "Salvar produto"}
             </Button>
@@ -393,6 +434,7 @@ export default function AdminCardapio() {
                     {p.is_featured ? <Badge tom="alerta">Vitrine</Badge> : null}
                     {!p.is_active ? <Badge tom="erro">Inativo</Badge> : null}
                     {p.photo_path ? <Badge tom="ok">Foto</Badge> : null}
+                    {p.available_window !== null ? <Badge>Com horário</Badge> : null}
                   </span>
                 </Cell>
                 <Cell>{nomeDaCategoria(p.category_id)}</Cell>
