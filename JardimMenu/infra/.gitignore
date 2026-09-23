@@ -1,0 +1,13 @@
+# Nenhum segredo no git (regra do projeto).
+#
+# Os .env de verdade são gravados pelo scripts/gerar-segredos.mjs FORA do repositório,
+# em /opt/jardim/ambientes/<ambiente>.env no servidor. Se alguém copiar um para cá por
+# engano, estas linhas evitam o commit.
+*.env
+.env
+.env.*
+!*.env.exemplo
+
+# Estado local do Caddy, se alguém rodar o proxy a partir desta pasta.
+proxy/dados/
+proxy/config/

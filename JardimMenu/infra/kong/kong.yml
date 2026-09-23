@@ -1,0 +1,267 @@
+# Kong em modo DB-less (configuracao declarativa), porta de entrada da API do Supabase.
+#
+# Fonte: arquivo oficial do repositorio supabase/supabase, pasta docker, em
+# https://github.com/supabase/supabase/blob/v1.24.09/docker/volumes/api/kong.yml
+# Usamos a versao de chaves classicas (anon e service_role como JWT HS256), que e a que
+# o gerar-segredos.mjs emite. O master do repositorio oficial ja migrou para chaves
+# opacas (publishable/secret) com transformacao em Lua; nao adotamos isso aqui.
+#
+# O que mudou em relacao ao oficial:
+#   - saiu o consumidor DASHBOARD e a rota catch-all do studio (studio nao sobe);
+#   - saiu /functions/v1 (sem edge functions) e /analytics/v1 (sem Logflare);
+#   - saiu /pg/ do postgres-meta: ele fica so na rede interna (veja o README);
+#   - o CORS deixou de ser aberto e passou a listar as origens do ambiente;
+#   - o host do Realtime vem de variavel, porque o nome do conteiner leva o ambiente.
+#
+# ATENCAO ao editar:
+#   1. o entrypoint do conteiner expande as variaveis deste arquivo com eval + echo,
+#      entao aspas duplas e crases quebram a subida do Kong, inclusive dentro de
+#      comentario. Use aspas simples e nenhuma crase.
+#   2. o bloco do CORS se repete em cada rota de proposito: ancora de YAML (<<: *x)
+#      dependeria de o parser do Kong aceitar merge key, o que nao esta documentado.
+
+_format_version: '2.1'
+_transform: true
+
+###
+### Consumidores: as duas chaves do ambiente.
+###
+consumers:
+  - username: anon
+    keyauth_credentials:
+      - key: $SUPABASE_ANON_KEY
+  - username: service_role
+    keyauth_credentials:
+      - key: $SUPABASE_SERVICE_KEY
+
+###
+### Lista de acesso: anon entra no grupo anon, service_role no grupo admin.
+###
+acls:
+  - consumer: anon
+    group: anon
+  - consumer: service_role
+    group: admin
+
+services:
+  ## ---------------------------------------------------------------------------
+  ## Auth (GoTrue). As tres primeiras rotas sao abertas de proposito: sao os retornos
+  ## de link de e-mail (convite, recuperacao), que chegam sem apikey.
+  ## ---------------------------------------------------------------------------
+  - name: auth-v1-open
+    _comment: 'GoTrue: /auth/v1/verify -> http://auth:9999/verify'
+    url: http://auth:9999/verify
+    routes:
+      - name: auth-v1-open
+        strip_path: true
+        paths:
+          - /auth/v1/verify
+    plugins:
+      - name: cors
+        config:
+          origins: [$CORS_ORIGENS]
+          methods: [GET, HEAD, POST, PATCH, PUT, DELETE, OPTIONS]
+          headers: [Accept, Accept-Profile, Authorization, Content-Type, Content-Profile, Prefer, Range, apikey, x-client-info, x-upsert]
+          exposed_headers: [Content-Range, Content-Profile, X-Client-Info]
+          credentials: true
+          max_age: 3600
+
+  - name: auth-v1-open-callback
+    _comment: 'GoTrue: /auth/v1/callback -> http://auth:9999/callback'
+    url: http://auth:9999/callback
+    routes:
+      - name: auth-v1-open-callback
+        strip_path: true
+        paths:
+          - /auth/v1/callback
+    plugins:
+      - name: cors
+        config:
+          origins: [$CORS_ORIGENS]
+          methods: [GET, HEAD, POST, PATCH, PUT, DELETE, OPTIONS]
+          headers: [Accept, Accept-Profile, Authorization, Content-Type, Content-Profile, Prefer, Range, apikey, x-client-info, x-upsert]
+          exposed_headers: [Content-Range, Content-Profile, X-Client-Info]
+          credentials: true
+          max_age: 3600
+
+  - name: auth-v1-open-authorize
+    _comment: 'GoTrue: /auth/v1/authorize -> http://auth:9999/authorize'
+    url: http://auth:9999/authorize
+    routes:
+      - name: auth-v1-open-authorize
+        strip_path: true
+        paths:
+          - /auth/v1/authorize
+    plugins:
+      - name: cors
+        config:
+          origins: [$CORS_ORIGENS]
+          methods: [GET, HEAD, POST, PATCH, PUT, DELETE, OPTIONS]
+          headers: [Accept, Accept-Profile, Authorization, Content-Type, Content-Profile, Prefer, Range, apikey, x-client-info, x-upsert]
+          exposed_headers: [Content-Range, Content-Profile, X-Client-Info]
+          credentials: true
+          max_age: 3600
+
+  - name: auth-v1
+    _comment: 'GoTrue: /auth/v1/* -> http://auth:9999/*'
+    url: http://auth:9999/
+    routes:
+      - name: auth-v1-all
+        strip_path: true
+        paths:
+          - /auth/v1/
+    plugins:
+      - name: cors
+        config:
+          origins: [$CORS_ORIGENS]
+          methods: [GET, HEAD, POST, PATCH, PUT, DELETE, OPTIONS]
+          headers: [Accept, Accept-Profile, Authorization, Content-Type, Content-Profile, Prefer, Range, apikey, x-client-info, x-upsert]
+          exposed_headers: [Content-Range, Content-Profile, X-Client-Info]
+          credentials: true
+          max_age: 3600
+      - name: key-auth
+        config:
+          hide_credentials: false
+      - name: acl
+        config:
+          hide_groups_header: true
+          allow:
+            - admin
+            - anon
+
+  ## ---------------------------------------------------------------------------
+  ## PostgREST. E por aqui que passam as RPC das functions security definer, que sao o
+  ## unico caminho de escrita do projeto (CLAUDE.md, stack).
+  ## ---------------------------------------------------------------------------
+  - name: rest-v1
+    _comment: 'PostgREST: /rest/v1/* -> http://rest:3000/*'
+    url: http://rest:3000/
+    routes:
+      - name: rest-v1-all
+        strip_path: true
+        paths:
+          - /rest/v1/
+    plugins:
+      - name: cors
+        config:
+          origins: [$CORS_ORIGENS]
+          methods: [GET, HEAD, POST, PATCH, PUT, DELETE, OPTIONS]
+          headers: [Accept, Accept-Profile, Authorization, Content-Type, Content-Profile, Prefer, Range, apikey, x-client-info, x-upsert]
+          exposed_headers: [Content-Range, Content-Profile, X-Client-Info]
+          credentials: true
+          max_age: 3600
+      - name: key-auth
+        config:
+          hide_credentials: true
+      - name: acl
+        config:
+          hide_groups_header: true
+          allow:
+            - admin
+            - anon
+
+  ## ---------------------------------------------------------------------------
+  ## Realtime: so as telas de equipe assinam (CLAUDE.md, tempo real). O host vem de
+  ## variavel porque o nome do conteiner leva o projeto do ambiente.
+  ## ---------------------------------------------------------------------------
+  - name: realtime-v1-ws
+    _comment: 'Realtime: /realtime/v1/* -> ws://<realtime>:4000/socket/*'
+    url: http://$REALTIME_HOST:4000/socket
+    protocol: ws
+    routes:
+      - name: realtime-v1-ws
+        strip_path: true
+        paths:
+          - /realtime/v1/
+    plugins:
+      - name: cors
+        config:
+          origins: [$CORS_ORIGENS]
+          methods: [GET, HEAD, POST, PATCH, PUT, DELETE, OPTIONS]
+          headers: [Accept, Accept-Profile, Authorization, Content-Type, Content-Profile, Prefer, Range, apikey, x-client-info, x-upsert]
+          exposed_headers: [Content-Range, Content-Profile, X-Client-Info]
+          credentials: true
+          max_age: 3600
+      - name: key-auth
+        config:
+          hide_credentials: false
+      - name: acl
+        config:
+          hide_groups_header: true
+          allow:
+            - admin
+            - anon
+
+  - name: realtime-v1-rest
+    _comment: 'Realtime: /realtime/v1/api/* -> http://<realtime>:4000/api/*'
+    url: http://$REALTIME_HOST:4000/api
+    protocol: http
+    routes:
+      - name: realtime-v1-rest
+        strip_path: true
+        paths:
+          - /realtime/v1/api
+    plugins:
+      - name: cors
+        config:
+          origins: [$CORS_ORIGENS]
+          methods: [GET, HEAD, POST, PATCH, PUT, DELETE, OPTIONS]
+          headers: [Accept, Accept-Profile, Authorization, Content-Type, Content-Profile, Prefer, Range, apikey, x-client-info, x-upsert]
+          exposed_headers: [Content-Range, Content-Profile, X-Client-Info]
+          credentials: true
+          max_age: 3600
+      - name: key-auth
+        config:
+          hide_credentials: false
+      - name: acl
+        config:
+          hide_groups_header: true
+          allow:
+            - admin
+            - anon
+
+  ## ---------------------------------------------------------------------------
+  ## Storage: fotos do cardapio. Sem key-auth de proposito, como no arquivo oficial: o
+  ## proprio storage-api valida o JWT, e a foto de bucket publico abre sem apikey.
+  ## ---------------------------------------------------------------------------
+  - name: storage-v1
+    _comment: 'Storage: /storage/v1/* -> http://storage:5000/*'
+    url: http://storage:5000/
+    routes:
+      - name: storage-v1-all
+        strip_path: true
+        paths:
+          - /storage/v1/
+    plugins:
+      - name: cors
+        config:
+          origins: [$CORS_ORIGENS]
+          methods: [GET, HEAD, POST, PATCH, PUT, DELETE, OPTIONS]
+          headers: [Accept, Accept-Profile, Authorization, Content-Type, Content-Profile, Prefer, Range, apikey, x-client-info, x-upsert]
+          exposed_headers: [Content-Range, Content-Profile, X-Client-Info]
+          credentials: true
+          max_age: 3600
+
+  ## ---------------------------------------------------------------------------
+  ## postgres-meta NAO tem rota: ele fica so na rede interna do compose. Publicar /pg/
+  ## daria leitura do schema inteiro a quem tiver a service_role, e ninguem precisa
+  ## disso pela internet (NF-006). Para ligar junto com o studio, descomente:
+  ##
+  # - name: meta
+  #   _comment: 'pg-meta: /pg/* -> http://meta:8080/*'
+  #   url: http://meta:8080/
+  #   routes:
+  #     - name: meta-all
+  #       strip_path: true
+  #       paths:
+  #         - /pg/
+  #   plugins:
+  #     - name: key-auth
+  #       config:
+  #         hide_credentials: false
+  #     - name: acl
+  #       config:
+  #         hide_groups_header: true
+  #         allow:
+  #           - admin
+  ## ---------------------------------------------------------------------------

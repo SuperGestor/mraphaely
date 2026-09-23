@@ -1,0 +1,4 @@
+# Tudo aqui roda em Linux. Fim de linha CRLF quebraria o shebang dos scripts .sh e o
+# entrypoint do Kong, então esta pasta nasce e sai do git sempre com LF, mesmo quando
+# quem edita está no Windows.
+* text eol=lf

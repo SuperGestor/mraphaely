@@ -1,0 +1,352 @@
+# Jardim Menu, pilha de UM ambiente (NF-012: staging e produção separados).
+#
+# O mesmo arquivo sobe os dois ambientes no mesmo servidor. O que separa é o projeto do
+# compose, vindo do .env do ambiente:
+#
+#   docker compose -p jardim-staging  --env-file /opt/jardim/ambientes/staging.env  up -d
+#   docker compose -p jardim-producao --env-file /opt/jardim/ambientes/producao.env up -d
+#
+# Projetos diferentes dão nomes de contêiner, volumes e rede interna diferentes, então os
+# dois bancos nunca se enxergam. Quem faz isso na prática é o scripts/publicar.sh; não
+# chame o compose na mão para publicar.
+#
+# Fora de propósito (veja o porquê no README): analytics (Logflare), vector, imgproxy,
+# edge-functions, studio e supavisor.
+#
+# Baseado no compose oficial do repositório supabase/supabase, pasta docker:
+# https://github.com/supabase/supabase/blob/master/docker/docker-compose.yml
+# As versões de imagem são as fixadas pelo projeto, e não as do arquivo oficial.
+
+name: ${PROJETO:-jardim}
+
+services:
+  # ---------------------------------------------------------------------------
+  # Postgres. NUNCA publicado: sem `ports:`, só na rede interna deste projeto.
+  # Quem precisa de psql entra por `docker compose exec db psql` ou por túnel SSH.
+  # ---------------------------------------------------------------------------
+  db:
+    image: public.ecr.aws/supabase/postgres:${VERSAO_POSTGRES:-17.6.1.167}
+    restart: unless-stopped
+    networks: [interna]
+    volumes:
+      # Scripts de inicialização: rodam UMA vez, na criação do volume de dados.
+      - ./postgres/roles.sql:/docker-entrypoint-initdb.d/init-scripts/99-roles.sql:ro
+      - ./postgres/jwt.sql:/docker-entrypoint-initdb.d/init-scripts/99-jwt.sql:ro
+      - ./postgres/realtime.sql:/docker-entrypoint-initdb.d/migrations/99-realtime.sql:ro
+      # Volume nomeado, e não bind: o prefixo do projeto já separa staging de produção.
+      - db-dados:/var/lib/postgresql/data
+      # Guarda a chave do pgsodium entre reinícios; sem isso o banco não reabre.
+      - db-config:/etc/postgresql-custom
+    healthcheck:
+      test: ["CMD", "pg_isready", "-U", "postgres", "-h", "localhost"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+    environment:
+      POSTGRES_HOST: /var/run/postgresql
+      PGPORT: ${POSTGRES_PORT:-5432}
+      POSTGRES_PORT: ${POSTGRES_PORT:-5432}
+      PGPASSWORD: ${POSTGRES_PASSWORD:?defina POSTGRES_PASSWORD no .env do ambiente}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?defina POSTGRES_PASSWORD no .env do ambiente}
+      PGDATABASE: ${POSTGRES_DB:-postgres}
+      POSTGRES_DB: ${POSTGRES_DB:-postgres}
+      JWT_EXP: ${JWT_EXPIRY:-3600}
+    command:
+      - postgres
+      - -c
+      - config_file=/etc/postgresql/postgresql.conf
+      # Sem isso o log enche com as consultas de polling do Realtime.
+      - -c
+      - log_min_messages=fatal
+
+  # ---------------------------------------------------------------------------
+  # GoTrue: login da equipe (/auth/v1). O tablet NÃO é usuário do Auth (CLAUDE.md).
+  # ---------------------------------------------------------------------------
+  auth:
+    image: public.ecr.aws/supabase/gotrue:${VERSAO_GOTRUE:-v2.196.0}
+    restart: unless-stopped
+    networks: [interna]
+    depends_on:
+      db:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD", "wget", "--no-verbose", "--tries=1", "--spider", "http://localhost:9999/health"]
+      timeout: 5s
+      interval: 10s
+      retries: 3
+    environment:
+      GOTRUE_API_HOST: 0.0.0.0
+      GOTRUE_API_PORT: 9999
+      API_EXTERNAL_URL: ${API_EXTERNAL_URL:?defina API_EXTERNAL_URL no .env do ambiente}
+
+      GOTRUE_DB_DRIVER: postgres
+      GOTRUE_DB_DATABASE_URL: postgres://supabase_auth_admin:${POSTGRES_PASSWORD}@db:${POSTGRES_PORT:-5432}/${POSTGRES_DB:-postgres}
+
+      GOTRUE_SITE_URL: ${SITE_URL:?defina SITE_URL no .env do ambiente}
+      GOTRUE_URI_ALLOW_LIST: ${ADDITIONAL_REDIRECT_URLS:-}
+      # Cadastro público FECHADO: quem entra é convidado pelo dono (JM-060..064).
+      GOTRUE_DISABLE_SIGNUP: ${DISABLE_SIGNUP:-true}
+
+      GOTRUE_JWT_ADMIN_ROLES: service_role
+      GOTRUE_JWT_AUD: authenticated
+      GOTRUE_JWT_DEFAULT_GROUP_NAME: authenticated
+      GOTRUE_JWT_EXP: ${JWT_EXPIRY:-3600}
+      GOTRUE_JWT_SECRET: ${JWT_SECRET:?defina JWT_SECRET no .env do ambiente}
+      GOTRUE_JWT_ISSUER: ${API_EXTERNAL_URL}
+
+      GOTRUE_EXTERNAL_EMAIL_ENABLED: ${ENABLE_EMAIL_SIGNUP:-true}
+      GOTRUE_EXTERNAL_ANONYMOUS_USERS_ENABLED: ${ENABLE_ANONYMOUS_USERS:-false}
+      GOTRUE_MAILER_AUTOCONFIRM: ${ENABLE_EMAIL_AUTOCONFIRM:-false}
+      GOTRUE_EXTERNAL_PHONE_ENABLED: ${ENABLE_PHONE_SIGNUP:-false}
+      GOTRUE_SMS_AUTOCONFIRM: ${ENABLE_PHONE_AUTOCONFIRM:-false}
+
+      # Sem SMTP o convite de usuário não sai (JM-060). Veja o README.
+      GOTRUE_SMTP_ADMIN_EMAIL: ${SMTP_ADMIN_EMAIL:-}
+      GOTRUE_SMTP_HOST: ${SMTP_HOST:-}
+      GOTRUE_SMTP_PORT: ${SMTP_PORT:-587}
+      GOTRUE_SMTP_USER: ${SMTP_USER:-}
+      GOTRUE_SMTP_PASS: ${SMTP_PASS:-}
+      GOTRUE_SMTP_SENDER_NAME: ${SMTP_SENDER_NAME:-Jardim Menu}
+      GOTRUE_MAILER_URLPATHS_INVITE: ${MAILER_URLPATHS_INVITE:-/auth/v1/verify}
+      GOTRUE_MAILER_URLPATHS_CONFIRMATION: ${MAILER_URLPATHS_CONFIRMATION:-/auth/v1/verify}
+      GOTRUE_MAILER_URLPATHS_RECOVERY: ${MAILER_URLPATHS_RECOVERY:-/auth/v1/verify}
+      GOTRUE_MAILER_URLPATHS_EMAIL_CHANGE: ${MAILER_URLPATHS_EMAIL_CHANGE:-/auth/v1/verify}
+
+  # ---------------------------------------------------------------------------
+  # PostgREST: /rest/v1. É por aqui que passam as RPC das functions security definer.
+  # ---------------------------------------------------------------------------
+  rest:
+    image: public.ecr.aws/supabase/postgrest:${VERSAO_POSTGREST:-v16.2}
+    restart: unless-stopped
+    networks: [interna]
+    depends_on:
+      db:
+        condition: service_healthy
+    healthcheck:
+      # A imagem do PostgREST não tem shell; o próprio binário responde pelo estado.
+      test: ["CMD", "postgrest", "--ready"]
+      interval: 10s
+      timeout: 5s
+      retries: 3
+    environment:
+      PGRST_DB_URI: postgres://authenticator:${POSTGRES_PASSWORD}@db:${POSTGRES_PORT:-5432}/${POSTGRES_DB:-postgres}
+      PGRST_DB_SCHEMAS: ${PGRST_DB_SCHEMAS:-public,graphql_public}
+      PGRST_DB_MAX_ROWS: ${PGRST_DB_MAX_ROWS:-1000}
+      PGRST_DB_EXTRA_SEARCH_PATH: ${PGRST_DB_EXTRA_SEARCH_PATH:-public,extensions}
+      PGRST_DB_ANON_ROLE: anon
+      PGRST_JWT_SECRET: ${JWT_SECRET}
+      PGRST_DB_USE_LEGACY_GUCS: "false"
+      PGRST_APP_SETTINGS_JWT_EXP: ${JWT_EXPIRY:-3600}
+      PGRST_ADMIN_SERVER_PORT: 3001
+      PGRST_ADMIN_SERVER_HOST: localhost
+    command: ["postgrest"]
+
+  # ---------------------------------------------------------------------------
+  # Realtime: só as telas de equipe assinam (CLAUDE.md, §8.6). O tablet faz polling.
+  #
+  # O nome do contêiner É configuração: o Realtime tira o id do tenant do subdomínio do
+  # Host da requisição, e o tenant que o SEED_SELF_HOST cria é `realtime-dev`. Por isso o
+  # nome leva o projeto no fim (dois ambientes no mesmo Docker não podem repetir nome) e
+  # começa sempre por `realtime-dev.`.
+  # ---------------------------------------------------------------------------
+  realtime:
+    image: public.ecr.aws/supabase/realtime:${VERSAO_REALTIME:-v2.130.0}
+    container_name: realtime-dev.${PROJETO:-jardim}
+    restart: unless-stopped
+    networks: [interna]
+    depends_on:
+      db:
+        condition: service_healthy
+    healthcheck:
+      test:
+        - CMD-SHELL
+        - 'curl -sSfL --head -o /dev/null -H "Authorization: Bearer ${ANON_KEY}" http://localhost:4000/api/tenants/realtime-dev/health'
+      timeout: 5s
+      interval: 30s
+      retries: 3
+      start_period: 15s
+    environment:
+      PORT: 4000
+      DB_HOST: db
+      DB_PORT: ${POSTGRES_PORT:-5432}
+      DB_USER: supabase_admin
+      DB_PASSWORD: ${POSTGRES_PASSWORD}
+      DB_NAME: ${POSTGRES_DB:-postgres}
+      DB_AFTER_CONNECT_QUERY: "SET search_path TO _realtime"
+      DB_ENC_KEY: ${REALTIME_DB_ENC_KEY:?defina REALTIME_DB_ENC_KEY no .env do ambiente}
+      API_JWT_SECRET: ${JWT_SECRET}
+      SECRET_KEY_BASE: ${SECRET_KEY_BASE:?defina SECRET_KEY_BASE no .env do ambiente}
+      METRICS_JWT_SECRET: ${JWT_SECRET}
+      ERL_AFLAGS: -proto_dist inet_tcp
+      DNS_NODES: "''"
+      RLIMIT_NOFILE: "10000"
+      APP_NAME: realtime
+      SEED_SELF_HOST: "true"
+      RUN_JANITOR: "true"
+      DISABLE_HEALTHCHECK_LOGGING: "true"
+
+  # ---------------------------------------------------------------------------
+  # Storage: fotos do cardápio. Sem imgproxy: as três larguras de §18.4 já saem prontas
+  # do upload, geradas com sharp em back/controllers/fotos.ts, e não do transform.
+  # ---------------------------------------------------------------------------
+  storage:
+    image: public.ecr.aws/supabase/storage-api:${VERSAO_STORAGE:-v1.72.1}
+    restart: unless-stopped
+    networks: [interna]
+    depends_on:
+      db:
+        condition: service_healthy
+      rest:
+        condition: service_started
+    healthcheck:
+      test: ["CMD", "wget", "--no-verbose", "--tries=1", "--spider", "http://localhost:5000/status"]
+      timeout: 5s
+      interval: 10s
+      retries: 3
+      start_period: 15s
+    volumes:
+      - storage-arquivos:/var/lib/storage
+    environment:
+      ANON_KEY: ${ANON_KEY:?defina ANON_KEY no .env do ambiente}
+      SERVICE_KEY: ${SERVICE_ROLE_KEY:?defina SERVICE_ROLE_KEY no .env do ambiente}
+      POSTGREST_URL: http://rest:3000
+      AUTH_JWT_SECRET: ${JWT_SECRET}
+      DATABASE_URL: postgres://supabase_storage_admin:${POSTGRES_PASSWORD}@db:${POSTGRES_PORT:-5432}/${POSTGRES_DB:-postgres}
+      STORAGE_PUBLIC_URL: ${SUPABASE_PUBLIC_URL:?defina SUPABASE_PUBLIC_URL no .env do ambiente}
+      REQUEST_ALLOW_X_FORWARDED_PATH: "true"
+      FILE_SIZE_LIMIT: ${STORAGE_FILE_SIZE_LIMIT:-52428800}
+      STORAGE_BACKEND: file
+      FILE_STORAGE_BACKEND_PATH: /var/lib/storage
+      GLOBAL_S3_BUCKET: ${GLOBAL_S3_BUCKET:-stub}
+      TENANT_ID: ${STORAGE_TENANT_ID:-jardim}
+      REGION: ${REGION:-local}
+      # Desligado de propósito: transform exigiria o imgproxy, que ficou de fora.
+      ENABLE_IMAGE_TRANSFORMATION: "false"
+
+  # ---------------------------------------------------------------------------
+  # postgres-meta: usado pelo `supabase gen types` e pelo studio, quando ligado.
+  # Não tem healthcheck documentado no compose oficial, então não inventamos um.
+  # ---------------------------------------------------------------------------
+  meta:
+    image: public.ecr.aws/supabase/postgres-meta:${VERSAO_META:-v0.99.0}
+    restart: unless-stopped
+    networks: [interna]
+    depends_on:
+      db:
+        condition: service_healthy
+    environment:
+      PG_META_PORT: 8080
+      PG_META_DB_HOST: db
+      PG_META_DB_PORT: ${POSTGRES_PORT:-5432}
+      PG_META_DB_NAME: ${POSTGRES_DB:-postgres}
+      PG_META_DB_USER: postgres
+      PG_META_DB_PASSWORD: ${POSTGRES_PASSWORD}
+      CRYPTO_KEY: ${PG_META_CRYPTO_KEY:?defina PG_META_CRYPTO_KEY no .env do ambiente}
+
+  # ---------------------------------------------------------------------------
+  # Kong: porta de entrada única da API (/auth, /rest, /realtime, /storage).
+  # Não publica porta no host: quem termina TLS e escuta 443 é o Caddy, na rede de borda.
+  #
+  # O entrypoint troca as variáveis dentro do kong.yml antes de subir; é o mesmo truque do
+  # compose oficial. Por isso o kong.yml não pode ter aspas duplas nem crase.
+  # ---------------------------------------------------------------------------
+  kong:
+    image: kong:${VERSAO_KONG:-2.8.1}
+    restart: unless-stopped
+    entrypoint: bash -c 'eval "echo \"$$(cat ~/temp.yml)\"" > ~/kong.yml && /docker-entrypoint.sh kong docker-start'
+    depends_on:
+      - auth
+      - rest
+      - realtime
+      - storage
+      - meta
+    networks:
+      interna:
+      borda:
+        aliases:
+          - api-${AMBIENTE:-staging}
+    volumes:
+      - ./kong/kong.yml:/home/kong/temp.yml:ro
+    environment:
+      KONG_DATABASE: "off"
+      KONG_DECLARATIVE_CONFIG: /home/kong/kong.yml
+      # Nome de contêiner com ponto (realtime-dev.…) só resolve com esta ordem de DNS.
+      KONG_DNS_ORDER: LAST,A,CNAME
+      KONG_PLUGINS: request-transformer,cors,key-auth,acl
+      KONG_NGINX_PROXY_PROXY_BUFFER_SIZE: 160k
+      KONG_NGINX_PROXY_PROXY_BUFFERS: 64 160k
+      # Quem está atrás do Caddy: sem isto o Kong loga o IP do proxy, e não o do cliente.
+      KONG_TRUSTED_IPS: 0.0.0.0/0,::/0
+      KONG_REAL_IP_HEADER: X-Forwarded-For
+      KONG_REAL_IP_RECURSIVE: "on"
+      SUPABASE_ANON_KEY: ${ANON_KEY}
+      SUPABASE_SERVICE_KEY: ${SERVICE_ROLE_KEY}
+      REALTIME_HOST: realtime-dev.${PROJETO:-jardim}
+      # Origens do navegador que podem falar com esta API (tablet e tela da equipe).
+      CORS_ORIGENS: ${CORS_ORIGENS:?defina CORS_ORIGENS no .env do ambiente}
+
+  # ---------------------------------------------------------------------------
+  # O app Next.js. A imagem é construída por ambiente, porque as NEXT_PUBLIC_ entram no
+  # bundle no build (item 3 do prompt). O build acontece no publicar.sh.
+  # ---------------------------------------------------------------------------
+  app:
+    image: ${IMAGEM_APP:-jardim-menu-app}:${TAG_APP:-local}
+    build:
+      context: ../front
+      dockerfile: Dockerfile
+      # O back/ é MVC só de servidor e mora fora do front/ (D33). Entra como contexto
+      # nomeado para o contexto principal continuar sendo o front/, com o .dockerignore
+      # dele. Exige Docker com buildx (o preparar-servidor.sh instala).
+      additional_contexts:
+        back: ../back
+      args:
+        NEXT_PUBLIC_SUPABASE_URL: ${NEXT_PUBLIC_SUPABASE_URL:?defina NEXT_PUBLIC_SUPABASE_URL no .env do ambiente}
+        NEXT_PUBLIC_SUPABASE_ANON_KEY: ${ANON_KEY}
+        NEXT_PUBLIC_DATA_SOURCE: ${NEXT_PUBLIC_DATA_SOURCE:-supabase}
+        NEXT_PUBLIC_APP_ORIGIN: ${NEXT_PUBLIC_APP_ORIGIN:?defina NEXT_PUBLIC_APP_ORIGIN no .env do ambiente}
+    restart: unless-stopped
+    networks:
+      borda:
+        aliases:
+          - app-${AMBIENTE:-staging}
+    healthcheck:
+      # NF-009/monitoramento: /api/saude responde sem tocar no banco.
+      test:
+        - CMD
+        - node
+        - -e
+        - "fetch('http://127.0.0.1:3000/api/saude').then(r => process.exit(r.ok ? 0 : 1)).catch(() => process.exit(1))"
+      interval: 15s
+      timeout: 5s
+      retries: 3
+      start_period: 20s
+    environment:
+      NODE_ENV: production
+      PORT: 3000
+      HOSTNAME: 0.0.0.0
+      # Repetidas em execução porque o middleware e as rotas de servidor também as leem.
+      NEXT_PUBLIC_SUPABASE_URL: ${NEXT_PUBLIC_SUPABASE_URL}
+      NEXT_PUBLIC_SUPABASE_ANON_KEY: ${ANON_KEY}
+      NEXT_PUBLIC_DATA_SOURCE: ${NEXT_PUBLIC_DATA_SOURCE:-supabase}
+      NEXT_PUBLIC_APP_ORIGIN: ${NEXT_PUBLIC_APP_ORIGIN}
+      # Segredo de servidor. NUNCA sob NEXT_PUBLIC_ (regra 4 do CLAUDE.md).
+      SUPABASE_SERVICE_ROLE_KEY: ${SERVICE_ROLE_KEY}
+      # NF-009: o envio do alerta é de outra frente; aqui só repassamos as variáveis.
+      ALERT_TELEGRAM_BOT_TOKEN: ${ALERT_TELEGRAM_BOT_TOKEN:-}
+      ALERT_TELEGRAM_CHAT_ID: ${ALERT_TELEGRAM_CHAT_ID:-}
+      ALERT_WEBHOOK_URL: ${ALERT_WEBHOOK_URL:-}
+
+networks:
+  # Rede interna do ambiente: nasce com o projeto, então staging e produção têm a sua.
+  interna:
+    driver: bridge
+  # Rede de borda, criada fora do compose pelo preparar-servidor.sh. É a única que o
+  # Caddy enxerga, e cada ambiente tem a sua, para um não alcançar o outro.
+  borda:
+    external: true
+    name: ${REDE_BORDA:?defina REDE_BORDA no .env do ambiente}
+
+volumes:
+  db-dados:
+  db-config:
+  storage-arquivos:
