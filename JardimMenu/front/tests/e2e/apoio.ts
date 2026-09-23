@@ -101,3 +101,40 @@ export async function abrirMesaNaEquipe(equipe: Page, mesa: number) {
   await expect(detalhe).toBeVisible();
   return detalhe;
 }
+
+// ------------------------------------------------------------------ a outra loja (E2E-14)
+
+/** A segunda loja da massa (back/supabase/seed.sql), que só existe para o teste de isolamento. */
+export const LOJA_CONFRARIA = "confraria";
+export const GESTOR_CONFRARIA = "gestor@confraria.local";
+
+/**
+ * O mesmo pareamento do `parearTablet`, pela mesma tela, para qualquer loja e com o login de
+ * quem é da equipe dela (JM-180, decisão de 21/09/2026). O `parearTablet` segue sendo o
+ * atalho do Jardim Secreto; este existe para o E2E-14, que precisa de um tablet em cada loja.
+ *
+ * A URL é conferida até o fim (`/tablet` e nada depois): a própria tela de configuração já
+ * casaria com o começo, e o "Mesa N" dela passaria pelo "Mesa N" do cardápio. Com o `$`,
+ * quando o helper devolve a página, o cardápio da loja do token já é o que está na tela.
+ */
+export async function parearTabletDaLoja(browser: Browser, loja: string, email: string, mesa: number): Promise<Page> {
+  const page = await novaAba(browser);
+  await page.goto(`/${loja}/tablet/setup`);
+  await page.getByLabel("E-mail da equipe").fill(email);
+  await page.getByLabel("Senha").fill(SENHA);
+  await page.getByLabel("Número da mesa deste tablet").fill(String(mesa));
+  await page.getByRole("button", { name: "Parear este tablet" }).click();
+  await page.getByRole("link", { name: "Abrir o cardápio" }).click();
+  await expect(page).toHaveURL(new RegExp(`/${loja}/tablet$`));
+  await expect(page.getByText(`Mesa ${mesa}`).first()).toBeVisible();
+  return page;
+}
+
+/**
+ * O token que o tablet guardou no pareamento (`CHAVE_DO_TOKEN` de lib/tablet-source.ts). Ele
+ * vive só no armazenamento local do aparelho e nunca aparece em URL, log ou outra resposta
+ * (NF-006); é por ele que o teste chama as rotas do tablet sem passar pela tela.
+ */
+export function tokenDoTablet(page: Page): Promise<string> {
+  return page.evaluate(() => localStorage.getItem("jm.dt") ?? "");
+}
