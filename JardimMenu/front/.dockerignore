@@ -1,0 +1,37 @@
+# O que NÃO entra no contexto de build da imagem (JardimMenu/front).
+#
+# Vale para o contexto principal do Dockerfile desta pasta. O back/ entra por contexto
+# nomeado e não passa por aqui.
+
+# Dependências e saídas de build: a imagem instala e constrói por conta própria, e
+# copiá-las da máquina de quem publica traria binário de outro sistema operacional.
+node_modules
+.next
+out
+build
+coverage
+test-results
+playwright-report
+
+# Segredo nunca vai para dentro de imagem (regra 4 do CLAUDE.md). O modelo, sem valor
+# nenhum, pode ficar.
+.env
+.env.*
+!.env.example
+
+# Service worker gerado no build (app/sw.ts é a fonte).
+public/sw.js
+public/sw.js.map
+public/swe-worker-*.js
+
+# Coisas de quem edita, que não mudam o que roda.
+.git
+.gitignore
+.vscode
+.idea
+*.log
+*.tsbuildinfo
+next-env.d.ts
+Dockerfile
+.dockerignore
+README.md
