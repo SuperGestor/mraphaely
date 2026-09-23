@@ -35,13 +35,10 @@ const versaoDoApp = (() => {
 
 const nextConfig: NextConfig = {
   reactStrictMode: true,
-<<<<<<< HEAD
   env: { NEXT_PUBLIC_APP_VERSION: versaoDoApp },
-=======
   // Servidor próprio em .next/standalone, com só as dependências que o rastreamento
   // provou necessárias. É o que a imagem Docker publica (infra/, NF-012).
   output: "standalone",
->>>>>>> 864c223 (Front: imagem Docker do app e sinal de vida em /api/saude)
   // D33: o back/ fica ao lado do front/, fora desta pasta, e é importado só no servidor.
   experimental: { externalDir: true },
   webpack(config) {
