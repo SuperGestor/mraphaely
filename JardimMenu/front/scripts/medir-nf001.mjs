@@ -97,7 +97,9 @@ import { z } from "zod";
 /** Toda entrada validada (regra do projeto), inclusive a que vem do ambiente. */
 const entrada = z
   .object({
-    NF001_URL: z.string().url("NF001_URL precisa ser a URL da tela do tablet, com http ou https"),
+    NF001_URL: z
+      .string({ error: "NF001_URL: falta esta variável de ambiente" })
+      .url("NF001_URL precisa ser a URL da tela do tablet, com http ou https"),
     NF001_EXECUCOES: z.coerce.number().int().min(1).max(200).default(20),
     NF001_CDP: z.string().url().default("http://localhost:9222"),
     NF001_LIMITE_P95_MS: z.coerce.number().int().positive().default(2000),
