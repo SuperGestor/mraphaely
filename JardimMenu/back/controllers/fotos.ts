@@ -69,7 +69,14 @@ export async function enviarFotoDoProduto(
   }
 
   const supabase = await clienteDaEquipe();
-  const { data: produto } = await supabase.from("products").select("id, store_id").eq("id", productId).maybeSingle();
+  // Lista vazia é "não existe, ou é de outra loja" (a RLS decide). Erro de verdade é
+  // reportado como erro: 404 numa falha de banco manda procurar um produto que existe.
+  const { data: produto, error: erroDoProduto } = await supabase
+    .from("products")
+    .select("id, store_id")
+    .eq("id", productId)
+    .maybeSingle();
+  if (erroDoProduto) return { ok: false, erro: traduzErro(erroDoProduto) };
   if (!produto) return recusa("Produto não encontrado.", 404, "JM404");
 
   const prefixo = `${produto.store_id}/${produto.id}/v${Date.now()}`;
