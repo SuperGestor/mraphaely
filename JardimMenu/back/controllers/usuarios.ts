@@ -17,6 +17,21 @@ export type Resultado<T> = { ok: true; dados: T } | { ok: false; erro: ErroDeReg
 const SEM_BANCO: ErroDeRegra = { status: 503, codigo: "JM503", mensagem: "Banco indisponível neste ambiente." };
 const ENTRADA_INVALIDA: ErroDeRegra = { status: 422, codigo: "JM422", mensagem: "Dados inválidos." };
 
+/**
+ * E-mail com conta no Auth: o convite é recusado, e o caminho é vincular a conta à loja
+ * (`admin_link_existing_user`, JM-052). Tem código próprio, e não o JM409 genérico, porque
+ * a tela decide por ele se oferece o botão de vincular: o JM409 também sai de
+ * `admin_add_store_user`, que é outra situação e não tem esse caminho.
+ *
+ * Este literal é lido no front em `front/lib/admin-source.ts` (CODIGO_CONTA_JA_EXISTE). O
+ * back não é importado por tela de navegador, então a constante existe dos dois lados.
+ */
+const CONTA_JA_EXISTE: ErroDeRegra = {
+  status: 409,
+  codigo: "JMU01",
+  mensagem: "Este e-mail já tem conta. Vincule a conta à loja com o papel que ela vai ter.",
+};
+
 const Papel = z.enum(["owner", "manager", "waiter", "kitchen"]);
 
 const Convite = z.strictObject({
@@ -43,7 +58,7 @@ export async function convidarUsuario(corpo: unknown, origem: string): Promise<R
       convite.motivo === "ambiente"
         ? { status: 503, codigo: "JM503", mensagem: "Convite indisponível: Auth não configurado neste ambiente." }
         : convite.motivo === "ja_cadastrado"
-          ? { status: 409, codigo: "JM409", mensagem: "Este e-mail já tem conta. Vincular conta existente entra na próxima etapa." }
+          ? CONTA_JA_EXISTE
           : { status: 502, codigo: "JM502", mensagem: "O Auth recusou o convite. Tente de novo em instantes." };
     return { ok: false, erro };
   }
