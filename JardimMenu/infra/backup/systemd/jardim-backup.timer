@@ -1,0 +1,32 @@
+[Unit]
+Description=Dispara o backup do Jardim Menu todo dia às 05:00
+
+[Timer]
+# 05:00 é horário de baixa: a casa está fechada e ninguém está pedindo.
+#
+# IMPORTANTE, sobre fuso: esta linha usa o fuso DO SERVIDOR. Deixe o servidor
+# em America/Sao_Paulo, que é o fuso da operação (D12):
+#     sudo timedatectl set-timezone America/Sao_Paulo
+#     timedatectl            # confira antes de confiar
+#
+# Se a sua política obrigar o servidor a ficar em UTC, troque a linha por
+#     OnCalendar=*-*-* 08:00:00
+# porque o Brasil não tem mais horário de verão desde 2019 e America/Sao_Paulo
+# é UTC-3 o ano inteiro. No systemd 252 ou mais novo (Ubuntu 24.04) dá para
+# escrever o fuso direto — no 249 do Ubuntu 22.04, NÃO, e a linha abaixo seria
+# aceita como nome de dia inválido:
+#     OnCalendar=*-*-* 05:00:00 America/Sao_Paulo
+OnCalendar=*-*-* 05:00:00
+
+# Se o servidor estava desligado na hora marcada, roda assim que ele voltar.
+# Backup que some porque a máquina reiniciou não é backup diário.
+Persistent=true
+
+# Alguns minutos de folga para não bater no mesmo segundo que outras tarefas.
+RandomizedDelaySec=300
+AccuracySec=1min
+
+Unit=jardim-backup.service
+
+[Install]
+WantedBy=timers.target

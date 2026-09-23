@@ -1,0 +1,44 @@
+# Modelo do rclone.conf do Jardim Menu. O arquivo de verdade vai para
+# /etc/jardim-menu/rclone.conf, com chmod 600, e NUNCA para o git.
+#
+# Gere-o com `rclone config` (ele pergunta tudo e escreve o arquivo):
+#   rclone config --config /etc/jardim-menu/rclone.conf
+#
+# Depois confira o acesso, sem enviar nada:
+#   rclone --config /etc/jardim-menu/rclone.conf lsd b2:
+#
+# Abaixo, os três destinos que o PO citou. Escolha UM; os outros ficam de
+# referência caso o destino mude.
+
+# ---------------------------------------------------------------- Backblaze B2
+# Barato para guardar e para escrever; cobra para ler de volta, o que só
+# acontece em teste de restauração e em desastre. É a escolha padrão.
+# Crie uma Application Key restrita ao bucket, sem permissão de apagar:
+# assim, mesmo que o servidor seja invadido, o histórico não pode ser destruído.
+[b2]
+type = b2
+account = ID_DA_APPLICATION_KEY
+key = SEGREDO_DA_APPLICATION_KEY
+hard_delete = false
+
+# ---------------------------------------------------------------- S3
+# Serve para AWS S3 e para qualquer compatível (Wasabi, Idrive e2, MinIO).
+# Em bucket com versionamento e Object Lock, a proteção é equivalente à do B2.
+[s3]
+type = s3
+provider = AWS
+access_key_id = SUA_ACCESS_KEY
+secret_access_key = SEU_SECRET
+region = sa-east-1
+storage_class = STANDARD_IA
+
+# ---------------------------------------------------------------- Google Drive
+# Mais fácil de olhar pelo navegador, e é a opção que não exige conta de nuvem
+# nova. O `rclone config` precisa de um navegador para autorizar; num servidor
+# sem tela, rode `rclone authorize "drive"` na sua máquina e cole o token.
+# Evite a raiz do Drive pessoal: use uma pasta só de backup, e confira a cota.
+[drive]
+type = drive
+scope = drive.file
+token = {"access_token":"...","refresh_token":"...","expiry":"..."}
+root_folder_id = ID_DA_PASTA_DE_BACKUP
