@@ -21,8 +21,16 @@ async function novaAba(browser: Browser): Promise<Page> {
   return contexto.newPage();
 }
 
+/**
+ * Fecha tudo entre cenários. Cada fechamento tem prazo: já aconteceu de um `close()` ficar
+ * pendurado e segurar a série inteira — um cenário de 90 s de limite apareceu no relatório
+ * com 50 min, porque o limite do Playwright vale para o teste, e o gancho de depois ficou
+ * esperando sozinho. Estourado o prazo, seguimos em frente: uma aba que não fechou custa
+ * memória, e uma série travada custa a rodada.
+ */
 export async function fecharContextos() {
-  await Promise.all(contextos.splice(0).map((c) => c.close().catch(() => {})));
+  const prazo = new Promise((resolve) => setTimeout(resolve, 10_000).unref?.());
+  await Promise.all(contextos.splice(0).map((c) => Promise.race([c.close().catch(() => {}), prazo])));
 }
 
 export const LOJA = "jardim-secreto";
@@ -52,6 +60,13 @@ export async function entrarNaEquipe(browser: Browser, email = GARCOM): Promise<
   await page.getByRole("button", { name: "Entrar" }).click();
   await expect(page).toHaveURL(/\/equipe/);
   await expect(page.getByRole("heading", { name: "Mesas" })).toBeVisible();
+  // Espera o Realtime entrar no canal antes de devolver a tela. Os cenários medem os 2 s do
+  // NF-003, e sem isto eles mediriam, junto, quanto o servidor de Realtime levou para
+  // aceitar a assinatura — logo depois de um `db reset`, que reinicia os contêineres, isso
+  // passa dos 2 s e a tela só atualiza na releitura de segurança de 10 s. O teste falharia
+  // por causa do contêiner, e não do produto. Quando o Realtime cai de verdade, quem cobre
+  // é o E2E-08.
+  await expect(page.getByRole("status").filter({ hasText: "ao vivo" })).toBeVisible({ timeout: 30_000 });
   return page;
 }
 
