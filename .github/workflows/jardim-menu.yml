@@ -9,9 +9,9 @@
 #   - banco: migrações num Postgres vazio e os testes pgTAP (§9.1: "o CI roda a migração
 #     base num banco vazio ... e roda o teste de conferência do plano").
 #
-# Sem segredo nenhum: nenhum `secrets.*` é lido aqui, e nada é publicado. A hospedagem
-# (Supabase Cloud e Vercel, decisão de 21/09/2026) está sendo montada em outra frente, e
-# deploy não entra neste arquivo.
+# Sem segredo nenhum: nenhum `secrets.*` é lido aqui, e nada é publicado. A publicação é
+# no servidor do dono do produto (decisão de 22/09/2026), por `infra/scripts/publicar.sh`,
+# rodado de lá: deploy não entra neste arquivo, e as chaves não saem do servidor.
 #
 # O E2E do Playwright (§9.2) fica de fora por enquanto: ele precisa do banco com a massa de
 # `seed.sql` e do servidor de produção no ar ao mesmo tempo, e isso é um terceiro job, a ser
