@@ -1,0 +1,102 @@
+# Integração contínua do Jardim Menu.
+#
+# Roda o que o CLAUDE.md e o REQUISITOS-v1.8.md exigem em máquina limpa, a cada push e a
+# cada pull request que mexa no projeto:
+#
+#   - front: tipos (NF-010, `tsc --noEmit` limpo no CI), lint, testes de unidade, build de
+#     produção e as verificações de segurança que não dependem de servidor (§9.4, regras 1
+#     e 4 das seis invioláveis: nenhuma escrita anônima, e `service_role` fora do bundle);
+#   - banco: migrações num Postgres vazio e os testes pgTAP (§9.1: "o CI roda a migração
+#     base num banco vazio ... e roda o teste de conferência do plano").
+#
+# Sem segredo nenhum: nenhum `secrets.*` é lido aqui, e nada é publicado. A hospedagem
+# (Supabase Cloud e Vercel, decisão de 21/09/2026) está sendo montada em outra frente, e
+# deploy não entra neste arquivo.
+#
+# O E2E do Playwright (§9.2) fica de fora por enquanto: ele precisa do banco com a massa de
+# `seed.sql` e do servidor de produção no ar ao mesmo tempo, e isso é um terceiro job, a ser
+# combinado antes de entrar. As medições NF-001 e NF-002 também não rodam aqui: elas são no
+# tablet de verdade, no Wi-Fi do salão (ver JardimMenu/docs/qa/README.md).
+name: Jardim Menu
+
+on:
+  push:
+    paths:
+      - "JardimMenu/**"
+      # O próprio arquivo de CI entra no gatilho: mudar a esteira tem de provar a esteira.
+      - ".github/workflows/jardim-menu.yml"
+  pull_request:
+    paths:
+      - "JardimMenu/**"
+      - ".github/workflows/jardim-menu.yml"
+
+# Só leitura: este fluxo não escreve nada no repositório.
+permissions:
+  contents: read
+
+jobs:
+  front:
+    name: Front (tipos, lint, unidade, build e segurança)
+    runs-on: ubuntu-latest
+    env:
+      # Build sem telemetria: máquina de CI não é ambiente de quem escolheu participar.
+      NEXT_TELEMETRY_DISABLED: "1"
+    defaults:
+      run:
+        working-directory: JardimMenu/front
+    steps:
+      - uses: actions/checkout@v7
+
+      - uses: actions/setup-node@v7
+        with:
+          # Node 22 LTS, a mesma linha do `@types/node` do package.json.
+          node-version: "22"
+          cache: npm
+          cache-dependency-path: JardimMenu/front/package-lock.json
+
+      - name: Instalar as dependências travadas
+        run: npm ci
+
+      - name: TypeScript estrito (NF-010)
+        run: npx tsc --noEmit
+
+      - name: ESLint
+        run: npx eslint .
+
+      - name: Testes de unidade (Vitest)
+        run: npx vitest run
+
+      - name: Build de produção, sobre o cardápio de exemplo
+        # Sem Supabase no CI: qualquer valor diferente de "supabase" mantém a fonte de
+        # exemplo (lib/menu-source.ts), e as variáveis do banco ficam ausentes de propósito.
+        # É o build que gera o .next/static que o passo seguinte vasculha (§9.4).
+        env:
+          NEXT_PUBLIC_DATA_SOURCE: exemplo
+        run: npm run build
+
+      - name: Verificações de segurança estáticas e do bundle (§9.4)
+        # Sem `--url`: só as checagens que não precisam de servidor. O script não lê nenhuma
+        # variável do Supabase obrigatoriamente — a chave `anon` só é conferida se existir,
+        # e a `service_role` é procurada pelo nome, não pelo valor.
+        run: node scripts/verificar-seguranca.mjs
+
+  banco:
+    name: Banco (migrações num banco vazio e pgTAP)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+
+      - uses: supabase/setup-cli@v3
+        with:
+          # Fixa, e igual à do `db:types` no package.json do front: a versão do CLI muda o
+          # que roda no banco, e isso não pode variar entre a máquina e o CI.
+          version: 2.117.0
+
+      - name: Subir o Postgres e aplicar as migrações
+        # `db start` levanta só o banco (não a pilha inteira) e aplica as migrações de
+        # back/supabase/migrations num banco vazio. O `--workdir` aponta para a pasta que
+        # contém `supabase/`, como no `db:types` do front.
+        run: supabase db start --workdir JardimMenu/back
+
+      - name: Testes de banco (pgTAP)
+        run: supabase test db --local --workdir JardimMenu/back
