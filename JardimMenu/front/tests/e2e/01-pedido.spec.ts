@@ -1,10 +1,13 @@
 import { expect, test } from "@playwright/test";
-import { abrirConta, abrirMesaNaEquipe, adicionar, entrarNaEquipe, entrarNoAdmin, enviar, parearTablet } from "./apoio";
+import { fecharContextos, abrirConta, abrirMesaNaEquipe, adicionar, entrarNaEquipe, entrarNoAdmin, enviar, parearTablet} from "./apoio";
 
 /**
  * E2E-01, E2E-02 e E2E-04: pedido do tablet até a tela da equipe, segundo pedido da mesma
  * abertura, e produto que fica indisponível no meio da sessão.
  */
+
+
+test.afterEach(fecharContextos);
 
 test("E2E-01/02: tablet pareado envia, o pedido entra confirmed e aparece na equipe com o código do PDV", async ({ browser }) => {
   const tablet = await parearTablet(browser, 1);

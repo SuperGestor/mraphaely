@@ -1,5 +1,5 @@
 import { expect, test, type APIRequestContext, type Page } from "@playwright/test";
-import { abrirMesaNaEquipe, entrarNaEquipe, entrarNoAdmin, LOJA, parearTablet } from "./apoio";
+import { fecharContextos, abrirMesaNaEquipe, entrarNaEquipe, entrarNoAdmin, LOJA, parearTablet} from "./apoio";
 
 /**
  * E2E-05 (JM-032), E2E-20 (JM-180, JM-182) e E2E-22 (JM-100, dispositivo). Pela API, com o
@@ -22,6 +22,9 @@ function pedir(request: APIRequestContext, t: string, chave: string, sessao: str
     data: { session_id: sessao, tab_id: comanda, items: [{ product_id: CHOPP, quantity: 1, option_ids: [], notes: null }] },
   });
 }
+
+
+test.afterEach(fecharContextos);
 
 test("E2E-05: a mesma chave 3x dá 1 pedido; em outra abertura, é outro pedido e nunca o alheio", async ({ browser, request }) => {
   const tablet = await parearTablet(browser, 3);

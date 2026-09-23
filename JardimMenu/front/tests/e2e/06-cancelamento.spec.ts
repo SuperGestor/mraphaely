@@ -1,5 +1,5 @@
 import { expect, test } from "@playwright/test";
-import { abrirConta, adicionar, entrarNaEquipe, enviar, parearTablet } from "./apoio";
+import { fecharContextos, abrirConta, adicionar, entrarNaEquipe, enviar, parearTablet} from "./apoio";
 
 /**
  * E2E-27 (JM-111): o cliente pede o cancelamento no tablet, o garçom vê em 2 s e recusa, e
@@ -9,6 +9,9 @@ import { abrirConta, adicionar, entrarNaEquipe, enviar, parearTablet } from "./a
  * O cenário monta o próprio pedido, numa mesa que nenhum outro usa, para não depender da
  * ordem dos arquivos.
  */
+
+test.afterEach(fecharContextos);
+
 test("E2E-27: pedido de cancelamento recusado, pedido de novo e aprovado", async ({ browser }) => {
   const tablet = await parearTablet(browser, 7);
   const equipe = await entrarNaEquipe(browser);
@@ -19,7 +22,8 @@ test("E2E-27: pedido de cancelamento recusado, pedido de novo e aprovado", async
 
   const conta = await abrirConta(tablet);
   await expect(conta).toContainText("R$ 48,00");
-  const linhaDoChopp = conta.locator("li").filter({ hasText: "1× Chopp Pilsen da casa" });
+  // O texto do item aparece no <li> do item e no <li> do pedido inteiro: vale o mais interno.
+  const linhaDoChopp = conta.locator("li").filter({ hasText: "1× Chopp Pilsen da casa" }).last();
   await linhaDoChopp.getByRole("button", { name: "Pedir cancelamento deste item" }).click();
   await conta.getByRole("alertdialog").getByRole("button", { name: "Pedir cancelamento" }).click();
   await expect(linhaDoChopp).toContainText("Cancelamento pedido, aguardando a equipe.");

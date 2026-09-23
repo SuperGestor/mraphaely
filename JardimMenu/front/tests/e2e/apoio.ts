@@ -1,4 +1,4 @@
-import { expect, type Browser, type Page } from "@playwright/test";
+import { expect, type Browser, type BrowserContext, type Page } from "@playwright/test";
 
 /**
  * Apoio dos E2E: parear um tablet pela tela de configuração (com o login do gestor, sem QR,
@@ -7,6 +7,24 @@ import { expect, type Browser, type Page } from "@playwright/test";
  * o tablet e a equipe usam.
  */
 
+/**
+ * Cada cenário abre navegadores próprios (tablet, equipe, admin). Sem fechar no fim, as
+ * abas de todos os cenários ficam vivas, cada uma com o polling de 10 s e o Realtime, e a
+ * disputa por processador faz a tela da equipe passar dos 2 s que o NF-003 pede. Por isso
+ * todo spec chama test.afterEach(fecharContextos).
+ */
+const contextos: BrowserContext[] = [];
+
+async function novaAba(browser: Browser): Promise<Page> {
+  const contexto = await browser.newContext();
+  contextos.push(contexto);
+  return contexto.newPage();
+}
+
+export async function fecharContextos() {
+  await Promise.all(contextos.splice(0).map((c) => c.close().catch(() => {})));
+}
+
 export const LOJA = "jardim-secreto";
 export const SENHA = "jardim-local-123";
 export const GESTOR = "gestor@jardim.local";
@@ -14,8 +32,7 @@ export const GARCOM = "garcom@jardim.local";
 export const DONO = "dono@jardim.local";
 
 export async function parearTablet(browser: Browser, mesa: number): Promise<Page> {
-  const contexto = await browser.newContext();
-  const page = await contexto.newPage();
+  const page = await novaAba(browser);
   await page.goto(`/${LOJA}/tablet/setup`);
   await page.getByLabel("E-mail da equipe").fill(GESTOR);
   await page.getByLabel("Senha").fill(SENHA);
@@ -28,8 +45,7 @@ export async function parearTablet(browser: Browser, mesa: number): Promise<Page
 }
 
 export async function entrarNaEquipe(browser: Browser, email = GARCOM): Promise<Page> {
-  const contexto = await browser.newContext();
-  const page = await contexto.newPage();
+  const page = await novaAba(browser);
   await page.goto("/login?de=/equipe");
   await page.getByLabel("E-mail").fill(email);
   await page.getByLabel("Senha").fill(SENHA);
@@ -41,7 +57,7 @@ export async function entrarNaEquipe(browser: Browser, email = GARCOM): Promise<
 
 /** Entra no admin como o gestor, já no caminho pedido. */
 export async function entrarNoAdmin(browser: Browser, caminho: string, email = GESTOR): Promise<Page> {
-  const page = await (await browser.newContext()).newPage();
+  const page = await novaAba(browser);
   await page.goto(`/login?de=${encodeURIComponent(caminho)}`);
   await page.getByLabel("E-mail").fill(email);
   await page.getByLabel("Senha").fill(SENHA);

@@ -1,7 +1,10 @@
 import { expect, test } from "@playwright/test";
-import { adicionar, entrarNaEquipe, parearTablet } from "./apoio";
+import { fecharContextos, adicionar, entrarNaEquipe, parearTablet} from "./apoio";
 
 /** E2E-06 (JM-038 a JM-040, JM-187) e E2E-08 (JM-185, JM-035, JM-012). */
+
+
+test.afterEach(fecharContextos);
 
 test("E2E-06: chamado com rate limit, atendido na equipe em 2 s, e o tablet avisado em até 10 s", async ({ browser }) => {
   const tablet = await parearTablet(browser, 4);

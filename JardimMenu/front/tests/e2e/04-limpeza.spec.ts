@@ -1,11 +1,14 @@
 import { expect, test } from "@playwright/test";
-import { abrirConta, adicionar, enviar, parearTablet } from "./apoio";
+import { fecharContextos, abrirConta, adicionar, enviar, parearTablet} from "./apoio";
 
 /**
  * E2E-21 (JM-183): a limpeza entre clientes zera sacola, busca e a sessão do pixel, e não
  * encerra a abertura da mesa nem a conta. E, no modo mesa_unica, o cliente nunca vê a
  * palavra comanda (E2E-23, JM-200).
  */
+
+test.afterEach(fecharContextos);
+
 test("E2E-21: novo cliente zera a tela e o pixel, e a conta da mesa continua", async ({ browser }) => {
   const tablet = await parearTablet(browser, 8);
   const sessoesDoPixel: string[] = [];
