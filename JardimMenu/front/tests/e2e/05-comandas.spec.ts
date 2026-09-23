@@ -1,5 +1,5 @@
 import { expect, test, type Page } from "@playwright/test";
-import { abrirConta, abrirMesaNaEquipe, adicionar, entrarNaEquipe, entrarNoAdmin, GESTOR, parearTablet } from "./apoio";
+import { fecharContextos, abrirConta, abrirMesaNaEquipe, adicionar, entrarNaEquipe, entrarNoAdmin, GESTOR, parearTablet} from "./apoio";
 
 /**
  * Módulo N na Fase B: E2E-23 (JM-200, JM-201, JM-203), E2E-26 (JM-209) e E2E-25 (JM-208,
@@ -9,6 +9,9 @@ import { abrirConta, abrirMesaNaEquipe, adicionar, entrarNaEquipe, entrarNoAdmin
  * item entre comandas (JM-205) e encerrar comanda sem consumo em 1 toque pelo tablet
  * (JM-207), que o texto do E2E-23 inclui.
  */
+
+test.afterEach(fecharContextos);
+
 test.describe.configure({ mode: "serial" });
 
 async function modoDaLoja(browser: Parameters<typeof entrarNoAdmin>[0], modo: "Uma conta por mesa" | "Comanda com nome") {
@@ -142,6 +145,9 @@ test("E2E-26: comanda migra para mesa livre, nome repetido no destino é recusad
 });
 
 test("E2E-25: a equipe encerra uma comanda e a outra segue pedindo; a última fecha a mesa, e o gerente fecha outra com motivo", async ({ browser }) => {
+  // Cenário longo: parear, encerrar duas comandas, enviar pedido, girar a mesa e ainda
+  // fechar outra mesa com motivo não cabem nos 90 s padrão.
+  test.slow();
   const tablet = await parearTablet(browser, 10);
   const equipe = await entrarNaEquipe(browser, GESTOR);
 
@@ -165,7 +171,18 @@ test("E2E-25: a equipe encerra uma comanda e a outra segue pedindo; a última fe
   await conta.getByRole("tab", { name: "Conta da mesa" }).click();
   await expect(conta).toContainText("Nenhuma comanda aberta");
 
-  // Outra mesa com comanda aberta (a 2, aberta no E2E-04) é fechada pelo gerente, com motivo.
+  // Outra mesa, com conta aberta, é fechada pelo gerente com motivo (JM-141). A abertura é
+  // feita aqui mesmo, pelo primeiro toque no tablet (JM-182), para o cenário não depender
+  // de outro arquivo ter rodado antes.
+  // A gaveta da mesa 10 cobre a tela: fechar antes de abrir outra mesa.
+  await detalhe.getByRole("button", { name: "Fechar a mesa na tela" }).click();
+  await expect(detalhe).toBeHidden();
+
+  const outro = await parearTablet(browser, 2);
+  await outro.locator("[data-produto]").first().getByRole("button").click();
+  await outro.keyboard.press("Escape");
+  await expect(equipe.getByRole("button", { name: /^2\b/ })).not.toContainText("livre", { timeout: 12_000 });
+
   detalhe = await abrirMesaNaEquipe(equipe, 2);
   await detalhe.getByRole("button", { name: "Fechar a mesa com motivo" }).click();
   const fechar = equipe.getByRole("dialog", { name: "Fechar a mesa 2?" });
