@@ -6,6 +6,7 @@
     "dev": "next dev",
     "build": "next build",
     "start": "next start",
+    "start:standalone": "node scripts/servir-standalone.mjs",
     "lint": "eslint",
     "db:types": "npx --yes supabase@2.117.0 gen types typescript --local --schema public --workdir ../back > lib/database.types.ts",
     "test": "vitest run",

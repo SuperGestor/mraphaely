@@ -27,8 +27,11 @@ export default defineConfig({
     serviceWorkers: "block",
     trace: "retain-on-failure",
   },
+  // O servidor é o do `output: "standalone"`, o mesmo server.js que a imagem Docker
+  // publica (front/Dockerfile). `next start` não funciona com standalone — o Next avisa —
+  // e verificar num servidor que ninguém executa em produção não prova o que precisa.
   webServer: {
-    command: "npm run start",
+    command: "npm run start:standalone",
     url: "http://localhost:3000",
     reuseExistingServer: true,
     timeout: 120_000,
