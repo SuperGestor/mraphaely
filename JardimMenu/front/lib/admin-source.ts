@@ -1,5 +1,5 @@
 import type { DeviceRow, StoreRole, StoreUserRow, TableRow, TabMode, TimeWindow, Uuid } from "./types";
-import { mockDevices, mockTables, mockUsers } from "./mock/admin";
+import { MINUTOS_DE_MESA_PARADA_DE_EXEMPLO, mockDevices, mockPainelDoCardapio, mockTables, mockUsers } from "./mock/admin";
 import { mockMenuSource } from "./mock/menu";
 
 /**
@@ -34,7 +34,7 @@ export interface LojaConfig {
   logo_url: string | null;
   primary_color: string;
   accent_color: string;
-  /** Minutos sem pedido até a tela da equipe destacar a mesa (JM-122). */
+  /** Mesa parada: minutos sem pedido até a tela da equipe destacar a mesa (JM-122, P5). */
   idle_table_alert_minutes: number;
 }
 
@@ -107,6 +107,19 @@ export class FalhaDoAdmin extends Error {
   }
 }
 
+/**
+ * Código que o convite devolve quando o e-mail já tem conta no Auth (JM-052). O mesmo
+ * literal está em `back/controllers/usuarios.ts` (CONTA_JA_EXISTE): o back não é importado
+ * por tela de navegador, então a constante existe dos dois lados, e uma aponta para a
+ * outra. É código próprio, e não o JM409 genérico, porque a tela decide por ele se oferece
+ * o botão de vincular a conta à loja.
+ */
+export const CODIGO_CONTA_JA_EXISTE = "JMU01";
+
+export function ehContaJaExiste(erro: unknown): boolean {
+  return erro instanceof FalhaDoAdmin && erro.codigo === CODIGO_CONTA_JA_EXISTE;
+}
+
 export interface AdminSource {
   modo: "exemplo" | "real";
   contexto(): Promise<ContextoDoAdmin>;
@@ -144,8 +157,9 @@ const exemplo: AdminSource = {
     const { store } = await mockMenuSource.getMenu("jardim-secreto");
     // O tempo de mesa parada (JM-122) não está na loja do cardápio de propósito: o tablet
     // não precisa dele, e o que o cliente baixa fica com o mínimo. Aqui vale o padrão da
-    // coluna, os mesmos 3 h que a loja de exemplo da tela da equipe usa.
-    return { ...store, idle_table_alert_minutes: 180 };
+    // coluna, os mesmos 3 h que a loja de exemplo da tela da equipe usa, com nome em vez de
+    // número solto (mock/admin.ts).
+    return { ...store, idle_table_alert_minutes: MINUTOS_DE_MESA_PARADA_DE_EXEMPLO };
   },
 
   async cardapio() {
@@ -179,7 +193,17 @@ const exemplo: AdminSource = {
   mesas: async () => mockTables,
   dispositivos: async () => mockDevices,
   usuarios: async () => mockUsers,
-  rpc: SO_LEITURA,
+
+  /**
+   * A lista de functions é de ESCRITA, com uma exceção de leitura: `admin_menu_panel`
+   * (JM-062). No modo de exemplo a leitura responde com dados de exemplo, como as outras
+   * leituras desta fonte, e toda escrita continua recusada, dizendo por quê.
+   */
+  async rpc(fn) {
+    if (fn === "admin_menu_panel") return mockPainelDoCardapio();
+    return SO_LEITURA();
+  },
+
   alterarDispositivo: SO_LEITURA,
   convidar: SO_LEITURA,
   alterarUsuario: SO_LEITURA,

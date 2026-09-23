@@ -3,7 +3,7 @@ import { clienteDaEquipe, supabaseConfigurado } from "../models/supabase";
 import { traduzErro, type ErroDeRegra } from "../errors";
 
 /**
- * Escrita do admin por RPC, com lista FECHADA de functions.
+ * Chamadas do admin por RPC, com lista FECHADA de functions.
  *
  * - Só entra o que está no mapa abaixo; qualquer outro nome é 404.
  * - Cada function tem o seu schema zod estrito (fronteira de entrada, CLAUDE.md).
@@ -11,6 +11,11 @@ import { traduzErro, type ErroDeRegra } from "../errors";
  *   O zod aqui é a primeira barreira, e não a única.
  * - Provisionar dispositivo, convidar usuário e enviar foto NÃO passam por aqui: os três
  *   geram segredo, chamam o Auth ou processam imagem no servidor, e têm rota própria.
+ *
+ * Quase tudo aqui é escrita. A exceção é `admin_menu_panel` (JM-062): ela é `stable` e só
+ * lê, mas entra nesta lista, e não em admin-dados, porque a leitura dela é uma function
+ * `security definer` que agrega pixel e pedido, e não um `select` sob RLS. O caminho é
+ * POST porque o turno vai no corpo; a rota já responde `cache: "no-store"`.
  */
 export type Resultado<T> = { ok: true; dados: T } | { ok: false; erro: ErroDeRegra };
 
@@ -94,8 +99,9 @@ const SCHEMAS = {
     p_product_id: uuid,
     p_available: z.boolean(),
   }),
-  // Tempo de mesa parada (JM-122): o mesmo limite do CHECK de stores, para a tela recusar
-  // antes de ir ao banco. O padrão de 3 h é da coluna, e não se repete aqui.
+  // Tempo de mesa parada (JM-122, P5): o mesmo limite do CHECK de stores e da function,
+  // para a tela receber JM422 com o nome do campo em vez de erro de banco. O padrão de 3 h
+  // é da coluna, e não se repete aqui.
   admin_update_store_idle_alert: z.strictObject({
     p_store_id: uuid,
     p_minutes: z.number().int().min(30).max(1440),
@@ -109,6 +115,19 @@ const SCHEMAS = {
     p_table_id: uuid,
     p_enabled: z.boolean(),
     p_reason: z.string().trim().min(1).max(140).nullable(),
+  }),
+  // Painel do pixel (JM-062). Sem turno, o banco usa o de agora (shift_date, regra 5): é
+  // por isso que o campo é opcional aqui, e nunca uma data calculada em JavaScript.
+  admin_menu_panel: z.strictObject({
+    p_store_id: uuid,
+    p_business_date: z.iso.date().nullable().optional(),
+  }),
+  // Vincular conta que já existe no Auth (JM-052). Só o dono, conferido de novo na
+  // function; o e-mail é o mesmo que o convite recusou com JMU01 (ver usuarios.ts).
+  admin_link_existing_user: z.strictObject({
+    p_store_id: uuid,
+    p_email: z.email().max(254),
+    p_role: z.enum(["owner", "manager", "waiter", "kitchen"]),
   }),
 } as const;
 
