@@ -1,0 +1,61 @@
+# Proxy do servidor: um só para os dois ambientes, porque só um processo pode escutar as
+# portas 80 e 443.
+#
+#   docker compose -p jardim-proxy --env-file /opt/jardim/ambientes/proxy.env up -d
+#
+# Ele entra nas duas redes de borda, e é o único que entra. Staging e produção continuam
+# sem se enxergar: cada um fica na sua rede, e quem fala com os dois é o proxy.
+
+name: ${PROJETO_PROXY:-jardim-proxy}
+
+services:
+  caddy:
+    # O padrão segue a série 2 para nunca falhar o pull. Fixe a versão exata no
+    # proxy.env assim que o servidor existir, para uma atualização não chegar sozinha.
+    image: caddy:${VERSAO_CADDY:-2-alpine}
+    restart: unless-stopped
+    ports:
+      - "80:80"
+      - "443:443"
+      # HTTP/3. Sem isto o Caddy anuncia h3 e o navegador tenta um caminho fechado.
+      - "443:443/udp"
+    volumes:
+      - ./Caddyfile:/etc/caddy/Caddyfile:ro
+      # Volume nomeado, e não pasta descartável: aqui mora o certificado emitido. Apagar
+      # este volume faz o Let's Encrypt ser chamado de novo, e o limite de emissão do
+      # sslip.io é compartilhado com o mundo inteiro.
+      - caddy-dados:/data
+      - caddy-config:/config
+    environment:
+      ACME_EMAIL: ${ACME_EMAIL:?defina ACME_EMAIL no proxy.env}
+      HOST_APP_STAGING: ${HOST_APP_STAGING:-}
+      HOST_API_STAGING: ${HOST_API_STAGING:-}
+      HOST_APP_PRODUCAO: ${HOST_APP_PRODUCAO:-}
+      HOST_API_PRODUCAO: ${HOST_API_PRODUCAO:-}
+      HSTS_MAX_AGE: ${HSTS_MAX_AGE:-86400}
+    healthcheck:
+      # A API de administração do Caddy, que só escuta em 127.0.0.1 dentro do contêiner.
+      # Não dá para bater na porta 80: lá o Caddy só atende os hosts configurados, e
+      # localhost não é um deles.
+      test: ["CMD", "wget", "--no-verbose", "--tries=1", "--spider", "http://localhost:2019/config/"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 10s
+    networks:
+      - borda-staging
+      - borda-producao
+
+networks:
+  # Criadas pelo preparar-servidor.sh, fora do compose, porque são compartilhadas entre
+  # projetos. O compose de cada ambiente entra na sua com o mesmo nome.
+  borda-staging:
+    external: true
+    name: ${REDE_BORDA_STAGING:-jardim-borda-staging}
+  borda-producao:
+    external: true
+    name: ${REDE_BORDA_PRODUCAO:-jardim-borda-producao}
+
+volumes:
+  caddy-dados:
+  caddy-config:
