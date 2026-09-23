@@ -12,6 +12,9 @@
 
 # testing
 /coverage
+# Saídas do Playwright: trace e vídeo de execução não são código, e pesam.
+/test-results
+/playwright-report
 
 # next.js
 /.next/
