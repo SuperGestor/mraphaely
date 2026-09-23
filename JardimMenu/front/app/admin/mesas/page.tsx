@@ -3,6 +3,12 @@
 import { useCallback, useEffect, useState } from "react";
 import type { DeviceRow, TabMode, TableRow as Mesa } from "@/lib/types";
 import { mensagemDe } from "@/lib/admin-source";
+import {
+  MAXIMO_DE_MESA_PARADA,
+  MINIMO_DE_MESA_PARADA,
+  lerMinutosDeMesaParada,
+  rotuloDeDuracao,
+} from "@/lib/mesa-parada";
 import { useAdmin } from "@/components/admin/AdminContext";
 import { Badge, Button, Cell, Field, Hint, PageHeader, Panel, Row, Switch, Table, TextInput } from "@/components/admin/ui";
 import { DialogoDeConfirmacao, DialogoDeMotivo } from "@/components/equipe/Dialogos";
@@ -11,9 +17,10 @@ import { DialogoDeConfirmacao, DialogoDeMotivo } from "@/components/equipe/Dialo
  * Mesas (JM-051). A mesa criada aqui pode receber um dispositivo (JM-180). Não há QR de
  * plaquinha: isso é do Módulo O, na Fase C (D21).
  *
- * Fase B: o modo de comanda da loja (JM-200) e a contingência por mesa (JM-186), os dois
- * só do dono e do gestor. A contingência também está na tela da equipe, onde ela é usada
- * no turno; aqui ela aparece junto do cadastro da mesa.
+ * Fase B: o modo de comanda da loja (JM-200), o tempo de mesa parada (JM-122) e a
+ * contingência por mesa (JM-186), os três só do dono e do gestor. A contingência também
+ * está na tela da equipe, onde ela é usada no turno; aqui ela aparece junto do cadastro da
+ * mesa.
  */
 export default function AdminMesas() {
   const { source, loja, gestor } = useAdmin();
@@ -25,6 +32,10 @@ export default function AdminMesas() {
   const [modo, setModo] = useState<TabMode | null>(null);
   const [pausando, setPausando] = useState<Mesa | null>(null);
   const [retomando, setRetomando] = useState<Mesa | null>(null);
+  /** Mesa parada (JM-122): o valor gravado e o que está sendo digitado, separados. */
+  const [paradaGravada, setParadaGravada] = useState<number | null>(null);
+  const [parada, setParada] = useState("");
+  const [problemaDaParada, setProblemaDaParada] = useState<string | null>(null);
 
   const carregar = useCallback(() => {
     Promise.all([source.mesas(loja.store_id), source.dispositivos(loja.store_id), source.loja(loja.store_id)])
@@ -32,6 +43,9 @@ export default function AdminMesas() {
         setMesas(m);
         setDispositivos(d);
         setModo(l.tab_mode);
+        setParadaGravada(l.idle_table_alert_minutes);
+        setParada(String(l.idle_table_alert_minutes));
+        setProblemaDaParada(null);
       })
       .catch((e: unknown) => setErro(mensagemDe(e)));
   }, [source, loja.store_id]);
@@ -90,6 +104,24 @@ export default function AdminMesas() {
       novo === "nomeada"
         ? "Comanda com nome ligada. Vale para as próximas mesas abertas."
         : "Comanda única ligada. Vale para as próximas mesas abertas.",
+    );
+  }
+
+  /**
+   * Mesa parada (JM-122, P5). A faixa é conferida aqui só para não ir ao servidor com
+   * número impossível; quem recusa de verdade é a function, e depois dela o CHECK da
+   * tabela.
+   */
+  function salvarMesaParada() {
+    const leitura = lerMinutosDeMesaParada(parada);
+    if (!leitura.ok) {
+      setProblemaDaParada(leitura.problema);
+      return;
+    }
+    setProblemaDaParada(null);
+    void executar(
+      () => source.rpc("admin_update_store_idle_alert", { p_store_id: loja.store_id, p_minutes: leitura.minutos }),
+      `Mesa parada: a equipe passa a ser avisada depois de ${rotuloDeDuracao(leitura.minutos)} sem pedido.`,
     );
   }
 
@@ -160,6 +192,54 @@ export default function AdminMesas() {
               </button>
             ))}
           </div>
+        )}
+      </Panel>
+
+      <Panel
+        titulo="Mesa parada"
+        descricao="Quanto tempo uma mesa aberta pode ficar sem pedido novo antes de a tela da equipe destacá-la."
+      >
+        {paradaGravada === null ? (
+          <p className="text-muted">Carregando…</p>
+        ) : (
+          <>
+            <p className="text-muted mb-4 text-sm">
+              O destaque é só um aviso para a equipe: ele <strong className="text-ink">não encerra a mesa</strong>, não
+              encerra comanda e não muda nada no tablet do cliente. Quem encerra continua sendo a equipe.
+            </p>
+            <div className="grid gap-4 min-[1100px]:grid-cols-[1fr_2fr_auto] min-[1100px]:items-end">
+              <Field
+                rotulo="Tempo sem pedido"
+                ajuda={`Em minutos, de ${MINIMO_DE_MESA_PARADA} a ${MAXIMO_DE_MESA_PARADA}.`}
+                erro={problemaDaParada}
+              >
+                <TextInput
+                  inputMode="numeric"
+                  value={parada}
+                  disabled={!gestor}
+                  aria-label="Tempo de mesa parada, em minutos"
+                  onChange={(e) => {
+                    setParada(e.target.value);
+                    setProblemaDaParada(null);
+                  }}
+                />
+              </Field>
+              <div className="mb-6">
+                <p className="text-base">
+                  Hoje a equipe é avisada depois de{" "}
+                  <strong className="tabular-nums">{rotuloDeDuracao(paradaGravada)}</strong> sem pedido.
+                </p>
+                <p className="text-muted mt-1 text-sm">Sem nenhum pedido ainda, a conta corre desde a abertura da mesa.</p>
+              </div>
+              {gestor ? (
+                <div className="mb-6">
+                  <Button onClick={salvarMesaParada} disabled={parada.trim() === String(paradaGravada)}>
+                    Gravar tempo
+                  </Button>
+                </div>
+              ) : null}
+            </div>
+          </>
         )}
       </Panel>
 
