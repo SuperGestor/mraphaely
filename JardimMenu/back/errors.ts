@@ -1,3 +1,4 @@
+import { alertarSemBloquear } from "./services/alert";
 
 /**
  * Catálogo dos erros de regra que as functions do banco levantam (SQLSTATE da classe JM).
@@ -55,11 +56,27 @@ function mensagemRepassada(codigo: string, mensagem: string): string {
   return mensagem;
 }
 
+/**
+ * NF-009, Fase A: 5xx de QUALQUER rota alerta. Este é o ponto central do 5xx de banco —
+ * todo controller que fala com o Postgres traduz o erro aqui, então nenhuma rota precisa
+ * lembrar de alertar, e nenhuma delas pode esquecer.
+ *
+ * O envio não entra no tempo da resposta (`alertarSemBloquear`), e leva só o SQLSTATE: a
+ * mensagem do banco num erro desconhecido pode carregar valor de linha ("Key (name)=(...)"),
+ * que é texto digitado pelo cliente, e o canal fica fora do nosso servidor.
+ *
+ * A exceção não tratada, que nunca chega aqui, é coberta pelo `onRequestError` do
+ * front/instrumentation.ts.
+ */
 export function traduzErro(e: { code?: string; message?: string } | null | undefined): ErroDeRegra {
   const codigo = e?.code ?? "";
   const item = CATALOGO[codigo];
   if (!item) {
+    alertarSemBloquear("servidor.5xx.banco", { codigo: "JM500", status: 500, sqlstate: codigo || "sem_codigo" });
     return { status: 500, codigo: "JM500", mensagem: "Erro interno." };
+  }
+  if (item.status >= 500) {
+    alertarSemBloquear("servidor.5xx.banco", { codigo, status: item.status, sqlstate: codigo });
   }
   return {
     status: item.status,

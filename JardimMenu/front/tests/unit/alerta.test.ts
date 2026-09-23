@@ -1,5 +1,6 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { registrarEAlertar } from "@back/services/alert";
+import { traduzErro } from "@back/errors";
 
 /**
  * NF-009: o alerta é o único aviso de pedido perdido durante o piloto, então ele precisa
@@ -181,5 +182,34 @@ describe("alerta do NF-009", () => {
     // 403 é o que o Telegram devolve quando o bot não está no grupo: o passo a passo
     // de docs/operacao/alerta-telegram.md existe por causa disso.
     expect(falha).toMatchObject({ canal: "telegram", causa: 403 });
+  });
+});
+
+describe("5xx de qualquer rota, no ponto central (NF-009, Fase A)", () => {
+  it("o JM500 do traduzErro alerta sozinho, com o SQLSTATE e sem a mensagem do banco", async () => {
+    vi.stubEnv("ALERT_TELEGRAM_BOT_TOKEN", TOKEN);
+    vi.stubEnv("ALERT_TELEGRAM_CHAT_ID", CHAT);
+
+    const traduzido = traduzErro({ code: "XX000", message: 'Key (name)=(Mesa da Ana) ja existe' });
+    // O alerta não segura a resposta: ele sai na volta do microtask.
+    await Promise.resolve();
+
+    expect(traduzido).toEqual({ status: 500, codigo: "JM500", mensagem: "Erro interno." });
+    expect(fetchSimulado).toHaveBeenCalledOnce();
+    const texto = String(corpoDaChamada(0).text);
+    expect(texto).toContain("servidor.5xx.banco");
+    expect(texto).toContain("sqlstate XX000");
+    expect(texto).not.toContain("Ana");
+  });
+
+  it("recusa de regra conhecida não vira alerta: JM-100 é resposta esperada, não falha", async () => {
+    vi.stubEnv("ALERT_TELEGRAM_BOT_TOKEN", TOKEN);
+    vi.stubEnv("ALERT_TELEGRAM_CHAT_ID", CHAT);
+
+    traduzErro({ code: "JMH01", message: "casa fechada" });
+    traduzErro({ code: "JMT02", message: "comanda encerrada" });
+    await Promise.resolve();
+
+    expect(fetchSimulado).not.toHaveBeenCalled();
   });
 });
