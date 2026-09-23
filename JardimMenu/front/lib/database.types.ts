@@ -1283,6 +1283,10 @@ export type Database = {
         Args: { p_store_user_id: string }
         Returns: undefined
       }
+      admin_link_existing_user: {
+        Args: { p_email: string; p_role: string; p_store_id: string }
+        Returns: string
+      }
       admin_list_store_users: {
         Args: { p_store_id: string }
         Returns: {
@@ -1293,6 +1297,10 @@ export type Database = {
           role: string
           user_id: string
         }[]
+      }
+      admin_menu_panel: {
+        Args: { p_business_date?: string; p_store_id: string }
+        Returns: Json
       }
       admin_set_device_status: {
         Args: { p_device_id: string; p_status: string }
@@ -1330,6 +1338,10 @@ export type Database = {
           p_store_id: string
           p_timezone: string
         }
+        Returns: undefined
+      }
+      admin_update_store_idle_alert: {
+        Args: { p_minutes: number; p_store_id: string }
         Returns: undefined
       }
       admin_upsert_category: {
@@ -1432,6 +1444,7 @@ export type Database = {
       }
       jm_item_price: {
         Args: {
+          p_exigir_minimo?: boolean
           p_option_ids: string[]
           p_product_id: string
           p_quantity: number
