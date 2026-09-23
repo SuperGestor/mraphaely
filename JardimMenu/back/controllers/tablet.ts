@@ -1,6 +1,7 @@
 import { z } from "zod";
 import { clienteAnonimo, supabaseConfigurado } from "../models/supabase";
 import { hashDoCabecalho } from "../services/device-token";
+import { alertarSemBloquear } from "../services/alert";
 import { SEM_TOKEN, traduzErro, type ErroDeRegra } from "../errors";
 
 /**
@@ -18,7 +19,12 @@ const SEM_BANCO: ErroDeRegra = {
 const ENTRADA_INVALIDA = (mensagem = "Dados inválidos."): ErroDeRegra => ({ status: 422, codigo: "JM422", mensagem });
 
 function preparar(headers: Headers): { hash: string } | { erro: ErroDeRegra } {
-  if (!supabaseConfigurado()) return { erro: SEM_BANCO };
+  if (!supabaseConfigurado()) {
+    // NF-009: o 503 de banco ausente é 5xx como qualquer outro, e aqui ele vale por todas
+    // as rotas do tablet, que é o caminho do cliente. O envio sai depois da resposta.
+    alertarSemBloquear("servidor.5xx.sem_banco", { codigo: SEM_BANCO.codigo, status: SEM_BANCO.status });
+    return { erro: SEM_BANCO };
+  }
   const hash = hashDoCabecalho(headers);
   return hash ? { hash } : { erro: SEM_TOKEN };
 }
@@ -117,8 +123,37 @@ const CorpoDoPedido = z.strictObject({
 /**
  * Envio do pedido (JM-031, JM-032, JM-100). O `Idempotency-Key` é obrigatório; sem ele, a
  * recusa já sai aqui, e o banco confere de novo.
+ *
+ * NF-009, Fase B: falha de criação de pedido é o único aviso de pedido perdido durante o
+ * piloto, então ela tem evento próprio, e não se mistura com o 5xx genérico. O alerta é
+ * por falha nossa (recusa 5xx ou exceção); recusa de regra (mesa encerrada, casa fechada,
+ * produto indisponível) é resposta esperada do JM-100, e não acorda ninguém.
+ *
+ * O alerta não leva token, corpo do pedido nem nome de comanda: quem lê o canal precisa
+ * saber que um pedido caiu e ir até as mesas, não saber quem pediu o quê.
  */
 export async function enviarPedido(headers: Headers, corpo: unknown): Promise<Resultado<unknown>> {
+  let r: Resultado<unknown>;
+  try {
+    r = await pedidoDoTablet(headers, corpo);
+  } catch (e) {
+    // Rede com o Supabase fora, por exemplo. O erro continua subindo, como antes: quem
+    // responde é o Next, e o onRequestError registra o 5xx da rota. Aqui só entra o aviso
+    // de pedido perdido, que ninguém mais dá.
+    alertarSemBloquear("pedido.criacao.falhou", {
+      status: 500,
+      erro: e instanceof Error ? e.name : "desconhecida",
+    });
+    throw e;
+  }
+
+  if (!r.ok && r.erro.status >= 500) {
+    alertarSemBloquear("pedido.criacao.falhou", { codigo: r.erro.codigo, status: r.erro.status });
+  }
+  return r;
+}
+
+async function pedidoDoTablet(headers: Headers, corpo: unknown): Promise<Resultado<unknown>> {
   const p = preparar(headers);
   if ("erro" in p) return { ok: false, erro: p.erro };
 
