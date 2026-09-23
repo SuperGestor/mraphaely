@@ -24,12 +24,14 @@ const withSerwist = withSerwistInit({
 });
 
 /**
- * Versão do app no heartbeat do tablet (JM-184): a do package.json, mais o commit quando o
- * build vem da Vercel. O admin vê qual versão cada tablet está rodando.
+ * Versão do app no heartbeat do tablet (JM-184): a do package.json, mais o commit quando
+ * quem constrói informa qual é (o publicar.sh passa `JM_COMMIT` como build arg). O admin
+ * vê qual versão cada tablet está rodando, e é por ela que se sabe se um aparelho ficou
+ * para trás depois de uma publicação.
  */
 const versaoDoApp = (() => {
   const { version } = JSON.parse(fs.readFileSync(path.join(process.cwd(), "package.json"), "utf8")) as { version: string };
-  const commit = process.env.VERCEL_GIT_COMMIT_SHA?.slice(0, 7);
+  const commit = process.env.JM_COMMIT?.slice(0, 7);
   return commit ? `${version}+${commit}` : version;
 })();
 

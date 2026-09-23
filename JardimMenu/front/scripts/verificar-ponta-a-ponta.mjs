@@ -251,8 +251,13 @@ secao('6. Preço no servidor (JM-031)');
 const total = (corpo, t = token1) => http('POST', '/api/tablet/total', { headers: token(t), corpo });
 r = await total({ product_id: BURGER, quantity: 2, option_ids: [AO_PONTO, BACON, QUEIJO] });
 confere(r.status === 200 && Number(r.json?.unit_total) === 68 && Number(r.json?.line_total) === 136, 'Burger ao ponto + bacon + queijo, 2 unidades: 136,00', `${det(r)} ${JSON.stringify(r.json)}`);
+// A prévia do modal aceita o grupo obrigatório ainda sem escolha, de propósito: ela é o
+// preço que aparece enquanto o cliente ainda está escolhendo, e recusar aqui deixava
+// "Preço indisponível" em todo produto com complemento obrigatório. Quem exige o mínimo é
+// o pedido, e isso está provado no banco (003_fase_b_tablet: "grupo obrigatório sem
+// escolha", JM422) e no E2E. Aqui prova-se que a prévia responde, e com o preço certo.
 r = await total({ product_id: BURGER, quantity: 1, option_ids: [BACON] });
-confere(r.status === 422, 'grupo obrigatório sem escolha é recusado', det(r));
+confere(r.status === 200 && Number(r.json?.unit_total) === 62, 'prévia com o grupo obrigatório ainda em aberto: 54,00 + bacon', `${det(r)} ${JSON.stringify(r.json)}`);
 r = await total({ product_id: BURGER, quantity: 1, option_ids: [AO_PONTO, OVO] });
 // O JM-004 nomeia só o produto indisponível; complemento esgotado é escolha inválida.
 confere(r.status === 422, 'complemento esgotado é recusado', det(r));

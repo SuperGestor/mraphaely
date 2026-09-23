@@ -304,6 +304,8 @@ services:
         NEXT_PUBLIC_SUPABASE_ANON_KEY: ${ANON_KEY}
         NEXT_PUBLIC_DATA_SOURCE: ${NEXT_PUBLIC_DATA_SOURCE:-supabase}
         NEXT_PUBLIC_APP_ORIGIN: ${NEXT_PUBLIC_APP_ORIGIN:?defina NEXT_PUBLIC_APP_ORIGIN no .env do ambiente}
+        # Preenchido pelo publicar.sh a partir do git. Vazio não quebra o build.
+        JM_COMMIT: ${JM_COMMIT:-}
     restart: unless-stopped
     networks:
       borda:

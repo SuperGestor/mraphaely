@@ -47,7 +47,7 @@ export async function lerDadosDoAdmin(recurso: string, lojaId: string | null): P
         // idle_table_alert_minutes é do JM-122: a tela de mesas mostra e grava o tempo, e a
         // tela da equipe usa o mesmo número para destacar a mesa parada.
         .select(
-          "id, slug, name, timezone, business_day_start, opening_hours, tab_mode, idle_table_alert_minutes, logo_url, primary_color, accent_color",
+          "id, slug, name, timezone, business_day_start, opening_hours, tab_mode, logo_url, primary_color, accent_color, idle_table_alert_minutes",
         )
         .eq("id", loja)
         .maybeSingle();

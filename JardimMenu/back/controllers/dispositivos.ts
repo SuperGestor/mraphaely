@@ -72,19 +72,28 @@ export async function configurarTablet(corpo: unknown): Promise<Resultado<Tablet
   if (erroDoLogin) return { ok: false, erro: LOGIN_INVALIDO };
 
   try {
-    // A RLS só mostra a loja a quem é da equipe dela.
-    const { data: aLoja } = await supabase.from("stores").select("id, slug, name").eq("slug", loja).maybeSingle();
+    // A RLS só mostra a loja a quem é da equipe dela: lista vazia significa "não é da
+    // equipe". Erro de verdade é outra coisa, e é reportado como erro: dizer "este login
+    // não é da equipe desta loja" quando o banco caiu manda a pessoa conferir o login que
+    // está certo, e esconde a falha de quem precisa vê-la.
+    const { data: aLoja, error: erroDaLoja } = await supabase
+      .from("stores")
+      .select("id, slug, name")
+      .eq("slug", loja)
+      .maybeSingle();
+    if (erroDaLoja) return { ok: false, erro: traduzErro(erroDaLoja) };
     if (!aLoja) {
       return { ok: false, erro: { status: 403, codigo: "JM403", mensagem: "Este login não é da equipe desta loja." } };
     }
 
-    const { data: aMesa } = await supabase
+    const { data: aMesa, error: erroDaMesa } = await supabase
       .from("tables")
       .select("id, number")
       .eq("store_id", aLoja.id)
       .eq("number", mesa)
       .eq("is_active", true)
       .maybeSingle();
+    if (erroDaMesa) return { ok: false, erro: traduzErro(erroDaMesa) };
     if (!aMesa) {
       return { ok: false, erro: { status: 404, codigo: "JM404", mensagem: `A mesa ${mesa} não existe nesta loja.` } };
     }

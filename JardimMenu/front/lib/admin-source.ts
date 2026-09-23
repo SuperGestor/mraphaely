@@ -31,11 +31,11 @@ export interface LojaConfig {
   business_day_start: string;
   opening_hours: TimeWindow[] | null;
   tab_mode: TabMode;
-  /** Mesa parada: minutos sem pedido até a tela da equipe destacar a mesa (JM-122, P5). */
-  idle_table_alert_minutes: number;
   logo_url: string | null;
   primary_color: string;
   accent_color: string;
+  /** Mesa parada: minutos sem pedido até a tela da equipe destacar a mesa (JM-122, P5). */
+  idle_table_alert_minutes: number;
 }
 
 export interface CategoriaAdmin {
@@ -155,8 +155,10 @@ const exemplo: AdminSource = {
 
   async loja() {
     const { store } = await mockMenuSource.getMenu("jardim-secreto");
-    // O cardápio de exemplo não carrega o tempo de mesa parada (ele é do salão, JM-122):
-    // o valor de exemplo entra aqui para a tela de mesas ter o que mostrar.
+    // O tempo de mesa parada (JM-122) não está na loja do cardápio de propósito: o tablet
+    // não precisa dele, e o que o cliente baixa fica com o mínimo. Aqui vale o padrão da
+    // coluna, os mesmos 3 h que a loja de exemplo da tela da equipe usa, com nome em vez de
+    // número solto (mock/admin.ts).
     return { ...store, idle_table_alert_minutes: MINUTOS_DE_MESA_PARADA_DE_EXEMPLO };
   },
 

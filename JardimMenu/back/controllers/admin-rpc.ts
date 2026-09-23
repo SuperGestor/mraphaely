@@ -99,6 +99,13 @@ const SCHEMAS = {
     p_product_id: uuid,
     p_available: z.boolean(),
   }),
+  // Tempo de mesa parada (JM-122, P5): o mesmo limite do CHECK de stores e da function,
+  // para a tela receber JM422 com o nome do campo em vez de erro de banco. O padrão de 3 h
+  // é da coluna, e não se repete aqui.
+  admin_update_store_idle_alert: z.strictObject({
+    p_store_id: uuid,
+    p_minutes: z.number().int().min(30).max(1440),
+  }),
   // Modo de comanda da loja (JM-200) e contingência por mesa (JM-186): dono e gestor.
   admin_set_tab_mode: z.strictObject({
     p_store_id: uuid,
@@ -108,13 +115,6 @@ const SCHEMAS = {
     p_table_id: uuid,
     p_enabled: z.boolean(),
     p_reason: z.string().trim().min(1).max(140).nullable(),
-  }),
-  // Mesa parada (JM-122, P5): minutos sem pedido até a tela da equipe destacar a mesa. A
-  // faixa de 30 a 1440 é a mesma do CHECK de stores e da function; repetida aqui para a
-  // tela receber JM422 com o nome do campo em vez de erro de banco.
-  admin_update_store_idle_alert: z.strictObject({
-    p_store_id: uuid,
-    p_minutes: z.number().int().min(30).max(1440),
   }),
   // Painel do pixel (JM-062). Sem turno, o banco usa o de agora (shift_date, regra 5): é
   // por isso que o campo é opcional aqui, e nunca uma data calculada em JavaScript.
