@@ -112,12 +112,23 @@ jm_validar_ambiente() {
 
 # Recusa nome de tabela que não seja identificador simples: a lista vem do
 # arquivo de configuração e é interpolada em SQL.
+# Aceita `tabela` (subentende public) ou `schema.tabela`. O schema é preciso porque as
+# contas da equipe vivem em auth.users e as fotos em storage.objects, fora do public, e são
+# justamente elas que uma restauração incompleta perde sem ninguém notar.
 jm_validar_tabela() {
   local tabela="$1"
-  if ! printf '%s' "$tabela" | grep -Eq '^[a-z_][a-z0-9_]*$'; then
+  if ! printf '%s' "$tabela" | grep -Eq '^([a-z_][a-z0-9_]*\.)?[a-z_][a-z0-9_]*$'; then
     jm_erro "Nome de tabela inválido na configuração: '$tabela'."
     return 1
   fi
+}
+
+# Devolve o nome qualificado: `pedidos` vira `public.pedidos`, `auth.users` fica como está.
+jm_tabela_qualificada() {
+  case "$1" in
+    *.*) printf '%s' "$1" ;;
+    *)   printf 'public.%s' "$1" ;;
+  esac
 }
 
 jm_exige_comandos() {
@@ -143,7 +154,11 @@ jm_psql() {
   local ambiente="$1"; shift
   local modo container user db host porta senha
   modo="$(jm_var_ambiente "$ambiente" MODO_BANCO "${MODO_BANCO:-docker}")"
-  user="$(jm_var_ambiente "$ambiente" PG_USER "${PG_USER:-postgres}")"
+  # supabase_admin, e não postgres: os schemas `auth` e `storage` pertencem a ele, e o
+  # `postgres` não os enxerga. Com `postgres`, o pg_dump omite os dois EM SILÊNCIO, e o
+  # backup sai sem as contas da equipe e sem o registro das fotos (achado de 23/09/2026,
+  # na primeira execução de verdade).
+  user="$(jm_var_ambiente "$ambiente" PG_USER "${PG_USER:-supabase_admin}")"
   db="$(jm_var_ambiente "$ambiente" PG_DB "${PG_DB:-postgres}")"
   senha="$(jm_var_ambiente "$ambiente" PG_SENHA "")"
 
@@ -172,7 +187,7 @@ jm_contagens() {
   local tabela
   for tabela in $tabelas; do
     jm_validar_tabela "$tabela" || return 1
-    sql="$sql union all select '$tabela', count(*) from public.$tabela"
+    sql="$sql union all select '$tabela', count(*) from $(jm_tabela_qualificada "$tabela")"
   done
   sql="$sql order by 1"
   jm_psql "$ambiente" -tA -F $'\t' -c "$sql"

@@ -59,7 +59,11 @@ DIR_TRAVA="${DIR_TRAVA:-/var/lock}"
 DIAS_RETENCAO_LOCAL="${DIAS_RETENCAO_LOCAL:-14}"
 DIAS_RETENCAO_REMOTO="${DIAS_RETENCAO_REMOTO:-0}"
 DIAS_ENTRE_RESUMOS="${DIAS_ENTRE_RESUMOS:-7}"
-TABELAS_CONFERIDAS="${TABELAS_CONFERIDAS:-stores store_users categories products option_groups options product_option_groups tables devices table_sessions table_tabs orders order_items menu_events}"
+# auth.users e storage.objects entram com o schema na frente, e não por capricho: são as
+# contas da equipe e o registro das fotos, moram fora do public, e foram exatamente o que
+# um backup aparentemente bom deixou de fora em 23/09/2026. Contadas aqui, a restauração
+# compara e não tem como declarar "conferida" sem elas.
+TABELAS_CONFERIDAS="${TABELAS_CONFERIDAS:-stores store_users categories products option_groups options product_option_groups tables devices table_sessions table_tabs orders order_items menu_events auth.users storage.objects}"
 DUMP_GLOBAIS="${DUMP_GLOBAIS:-sim}"
 RCLONE_REMOTO="${RCLONE_REMOTO:-}"
 RCLONE_CONFIG="${RCLONE_CONFIG:-/etc/jardim-menu/rclone.conf}"
@@ -107,7 +111,7 @@ dump_banco() {
   local ambiente="$1" destino="$2"
   local modo container user db host porta senha parcial
   modo="$(jm_var_ambiente "$ambiente" MODO_BANCO "${MODO_BANCO:-docker}")"
-  user="$(jm_var_ambiente "$ambiente" PG_USER "${PG_USER:-postgres}")"
+  user="$(jm_var_ambiente "$ambiente" PG_USER "${PG_USER:-supabase_admin}")"
   db="$(jm_var_ambiente "$ambiente" PG_DB "${PG_DB:-postgres}")"
   senha="$(jm_var_ambiente "$ambiente" PG_SENHA "")"
   container="$(jm_var_ambiente "$ambiente" CONTAINER_DB "")"
@@ -135,12 +139,33 @@ dump_banco() {
 
   # Só vira arquivo definitivo depois de o pg_restore conseguir ler o índice.
   # Dump truncado que ninguém abriu é o clássico do backup que não existe.
+  local indice
   if [ "$modo" = "docker" ]; then
-    docker exec -i "$container" pg_restore --list < "$parcial" > /dev/null \
+    indice="$(docker exec -i "$container" pg_restore --list < "$parcial" 2>/dev/null)" \
       || { rm -f "$parcial"; jm_erro "[$ambiente] o dump não passou no pg_restore --list: arquivo inválido."; return 1; }
   else
-    pg_restore --list "$parcial" > /dev/null \
+    indice="$(pg_restore --list "$parcial" 2>/dev/null)" \
       || { rm -f "$parcial"; jm_erro "[$ambiente] o dump não passou no pg_restore --list: arquivo inválido."; return 1; }
+  fi
+
+  # O dump PRECISA trazer auth.users e storage.objects. Ler o índice é o único jeito de
+  # saber: quando o pg_dump roda com um papel que não enxerga esses schemas, ele não
+  # falha, não avisa e devolve código 0 — só entrega um dump sem eles.
+  #
+  # Foi o que aconteceu em 23/09/2026, com PG_USER=postgres: o backup parecia perfeito, a
+  # restauração no staging bateu todas as contagens do `public` e declarou "CONFERIDA", e
+  # o garçom apagado não voltou. Num desastre de verdade, o cardápio voltaria e ninguém
+  # da equipe conseguiria entrar.
+  # Casamento em bash puro, sem cano. `printf ... | grep -q` não serve aqui: o grep -q sai
+  # no primeiro acerto, o printf morre de SIGPIPE, e com `set -o pipefail` o pipeline
+  # inteiro vira falha — ou seja, encontrar a tabela era registrado como não encontrar.
+  local faltando=""
+  case "$indice" in *"TABLE DATA auth users"*) ;; *) faltando="$faltando auth.users" ;; esac
+  case "$indice" in *"TABLE DATA storage objects"*) ;; *) faltando="$faltando storage.objects" ;; esac
+  if [ -n "$faltando" ]; then
+    rm -f "$parcial"
+    jm_erro "[$ambiente] o dump saiu SEM:$faltando. Quase sempre é o papel do banco: ${ambiente^^}_PG_USER precisa ser supabase_admin, que é o dono dos schemas auth e storage. Com 'postgres' o pg_dump omite os dois sem reclamar."
+    return 1
   fi
 
   mv "$parcial" "$destino"
@@ -153,7 +178,7 @@ dump_globais() {
   local ambiente="$1" destino="$2"
   local modo container user senha host porta
   modo="$(jm_var_ambiente "$ambiente" MODO_BANCO "${MODO_BANCO:-docker}")"
-  user="$(jm_var_ambiente "$ambiente" PG_USER "${PG_USER:-postgres}")"
+  user="$(jm_var_ambiente "$ambiente" PG_USER "${PG_USER:-supabase_admin}")"
   senha="$(jm_var_ambiente "$ambiente" PG_SENHA "")"
   container="$(jm_var_ambiente "$ambiente" CONTAINER_DB "")"
   host="$(jm_var_ambiente "$ambiente" PG_HOST "127.0.0.1")"

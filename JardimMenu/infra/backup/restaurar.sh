@@ -170,7 +170,10 @@ fi
 # ---------------------------------------------------------------- restaurar
 
 modo="$(jm_var_ambiente "$ALVO" MODO_BANCO "${MODO_BANCO:-docker}")"
-user="$(jm_var_ambiente "$ALVO" PG_USER "${PG_USER:-postgres}")"
+# supabase_admin: os schemas auth e storage pertencem a ele. Como `postgres`, o pg_restore
+# leva "permission denied for schema auth" em cada objeto dos dois, e a restauração volta
+# sem as contas da equipe e sem o registro das fotos (achado de 23/09/2026).
+user="$(jm_var_ambiente "$ALVO" PG_USER "${PG_USER:-supabase_admin}")"
 senha="$(jm_var_ambiente "$ALVO" PG_SENHA "")"
 host="$(jm_var_ambiente "$ALVO" PG_HOST "127.0.0.1")"
 porta="$(jm_var_ambiente "$ALVO" PG_PORTA "5432")"
