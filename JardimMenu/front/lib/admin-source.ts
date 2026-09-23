@@ -34,6 +34,8 @@ export interface LojaConfig {
   logo_url: string | null;
   primary_color: string;
   accent_color: string;
+  /** Minutos sem pedido até a tela da equipe destacar a mesa (JM-122). */
+  idle_table_alert_minutes: number;
 }
 
 export interface CategoriaAdmin {
@@ -140,7 +142,10 @@ const exemplo: AdminSource = {
 
   async loja() {
     const { store } = await mockMenuSource.getMenu("jardim-secreto");
-    return { ...store };
+    // O tempo de mesa parada (JM-122) não está na loja do cardápio de propósito: o tablet
+    // não precisa dele, e o que o cliente baixa fica com o mínimo. Aqui vale o padrão da
+    // coluna, os mesmos 3 h que a loja de exemplo da tela da equipe usa.
+    return { ...store, idle_table_alert_minutes: 180 };
   },
 
   async cardapio() {

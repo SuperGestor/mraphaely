@@ -44,7 +44,9 @@ export async function lerDadosDoAdmin(recurso: string, lojaId: string | null): P
     case "loja": {
       const { data, error } = await supabase
         .from("stores")
-        .select("id, slug, name, timezone, business_day_start, opening_hours, tab_mode, logo_url, primary_color, accent_color")
+        .select(
+          "id, slug, name, timezone, business_day_start, opening_hours, tab_mode, logo_url, primary_color, accent_color, idle_table_alert_minutes",
+        )
         .eq("id", loja)
         .maybeSingle();
       if (error) return { ok: false, erro: traduzErro(error) };

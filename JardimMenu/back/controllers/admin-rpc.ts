@@ -94,6 +94,12 @@ const SCHEMAS = {
     p_product_id: uuid,
     p_available: z.boolean(),
   }),
+  // Tempo de mesa parada (JM-122): o mesmo limite do CHECK de stores, para a tela recusar
+  // antes de ir ao banco. O padrão de 3 h é da coluna, e não se repete aqui.
+  admin_update_store_idle_alert: z.strictObject({
+    p_store_id: uuid,
+    p_minutes: z.number().int().min(30).max(1440),
+  }),
   // Modo de comanda da loja (JM-200) e contingência por mesa (JM-186): dono e gestor.
   admin_set_tab_mode: z.strictObject({
     p_store_id: uuid,
