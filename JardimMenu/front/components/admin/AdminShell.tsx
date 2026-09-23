@@ -3,6 +3,7 @@
 import Link from "next/link";
 import { usePathname } from "next/navigation";
 import { useEffect, useState, type ReactNode } from "react";
+import { useEstadoDoAdmin } from "./AdminContext";
 
 /**
  * Casca do painel de configuração, responsiva (15/09/2026):
@@ -20,6 +21,12 @@ export interface SecaoDoAdmin {
   rotulo: string;
   /** Abreviação mostrada com o menu minimizado. */
   sigla: string;
+  /**
+   * Seção que só dono e gestor abrem (o painel do cardápio, JM-062). Esconder o item não
+   * é a defesa: a function do banco confere o papel, e a própria tela também. É para o
+   * garçom não bater numa porta fechada.
+   */
+  somenteGestor?: boolean;
 }
 
 function IconeMenu() {
@@ -40,8 +47,13 @@ export function AdminShell({
   children: ReactNode;
 }) {
   const caminho = usePathname();
+  const estado = useEstadoDoAdmin();
   const [minimizado, setMinimizado] = useState(false);
   const [gavetaAberta, setGavetaAberta] = useState(false);
+
+  // Enquanto a loja não carrega, a seção de gestor fica fora: aparecer e sumir seria pior
+  // do que aparecer um instante depois, e o garçom nunca chega a vê-la.
+  const visiveis = secoes.filter((s) => !s.somenteGestor || (estado.estado === "pronto" && estado.gestor));
 
   useEffect(() => {
     try {
@@ -80,7 +92,7 @@ export function AdminShell({
   function navegacao(compacta: boolean) {
     return (
       <nav className={`flex-1 overflow-y-auto pb-4 ${compacta ? "px-2" : "px-3"}`} aria-label="Seções da configuração">
-        {secoes.map((s) => (
+        {visiveis.map((s) => (
           <Link
             key={s.href}
             href={s.href}

@@ -10,6 +10,12 @@ import { Hint } from "./ui";
  *
  * Um usuário pode ter papel em mais de uma loja. Na Fase A o painel usa a primeira loja
  * ativa; a troca de loja entra quando a segunda casa do portfólio entrar.
+ *
+ * **Por que o contexto tem estado, e não só valor:** a navegação (AdminShell) fica ACIMA
+ * do conteúdo na árvore e precisa do papel para esconder a seção que o garçom não abre
+ * (JM-062). Então o provedor envolve a casca, e a barra do usuário, o carregando e o erro,
+ * que antes moravam aqui, passaram para `ConteudoDoAdmin`, que fica dentro da área de
+ * conteúdo, onde sempre estiveram na tela.
  */
 interface ValorDoAdmin {
   source: AdminSource;
@@ -20,11 +26,15 @@ interface ValorDoAdmin {
   dono: boolean;
 }
 
-const Contexto = createContext<ValorDoAdmin | null>(null);
+export type EstadoDoAdmin =
+  | { estado: "carregando" }
+  | { estado: "erro"; mensagem: string }
+  | ({ estado: "pronto" } & ValorDoAdmin);
+
+const Contexto = createContext<EstadoDoAdmin | null>(null);
 
 export function AdminProvider({ children }: { children: ReactNode }) {
-  const [valor, setValor] = useState<ValorDoAdmin | null>(null);
-  const [erro, setErro] = useState<string | null>(null);
+  const [estado, setEstado] = useState<EstadoDoAdmin>({ estado: "carregando" });
 
   useEffect(() => {
     const source = getAdminSource();
@@ -33,10 +43,14 @@ export function AdminProvider({ children }: { children: ReactNode }) {
       .then((c) => {
         const loja = c.lojas[0];
         if (!loja) {
-          setErro("Seu usuário não está ativo em nenhuma loja. Peça ao dono da casa para te convidar.");
+          setEstado({
+            estado: "erro",
+            mensagem: "Seu usuário não está ativo em nenhuma loja. Peça ao dono da casa para te convidar.",
+          });
           return;
         }
-        setValor({
+        setEstado({
+          estado: "pronto",
           source,
           loja,
           email: c.email,
@@ -44,32 +58,53 @@ export function AdminProvider({ children }: { children: ReactNode }) {
           dono: loja.role === "owner",
         });
       })
-      .catch((e: unknown) => setErro(mensagemDe(e)));
+      .catch((e: unknown) => setEstado({ estado: "erro", mensagem: mensagemDe(e) }));
   }, []);
 
-  if (erro) {
+  return <Contexto.Provider value={estado}>{children}</Contexto.Provider>;
+}
+
+/** Estado cru, para quem precisa desenhar antes da loja existir (a navegação). */
+export function useEstadoDoAdmin(): EstadoDoAdmin {
+  const estado = useContext(Contexto);
+  if (!estado) throw new Error("useEstadoDoAdmin fora do AdminProvider");
+  return estado;
+}
+
+/** Para as telas, que só são montadas depois da loja carregar (ver ConteudoDoAdmin). */
+export function useAdmin(): ValorDoAdmin {
+  const estado = useEstadoDoAdmin();
+  if (estado.estado !== "pronto") throw new Error("useAdmin antes de a loja carregar");
+  return estado;
+}
+
+/** Barra do usuário, carregando e erro. Fica dentro da área de conteúdo, ao lado do menu. */
+export function ConteudoDoAdmin({ children }: { children: ReactNode }) {
+  const estado = useEstadoDoAdmin();
+
+  if (estado.estado === "erro") {
     return (
       <div className="p-4 sm:p-8">
-        <Hint>{erro}</Hint>
+        <Hint>{estado.mensagem}</Hint>
       </div>
     );
   }
-  if (!valor) {
+  if (estado.estado === "carregando") {
     return <p className="text-muted p-4 text-base sm:p-8">Carregando a loja…</p>;
   }
 
   return (
-    <Contexto.Provider value={valor}>
-      {valor.source.modo === "exemplo" ? (
+    <>
+      {estado.source.modo === "exemplo" ? (
         <div className="bg-accent px-4 py-2 text-sm font-semibold text-white sm:px-8" role="status">
           Modo de exemplo: sem banco configurado. As telas leem dados de exemplo e não gravam nada.
         </div>
       ) : null}
       <div className="border-line flex flex-wrap items-center justify-end gap-x-4 gap-y-1 border-b px-4 py-2 text-sm sm:px-8">
         <span className="text-muted min-w-0 break-words">
-          {valor.loja.nome} · {valor.email ?? "sem e-mail"} · {rotuloDoPapel(valor.loja.role)}
+          {estado.loja.nome} · {estado.email ?? "sem e-mail"} · {rotuloDoPapel(estado.loja.role)}
         </span>
-        {valor.source.modo === "real" ? (
+        {estado.source.modo === "real" ? (
           <form action="/api/admin/sair" method="post">
             <button type="submit" className="jm-focus jm-touch text-muted underline">
               Sair
@@ -77,17 +112,11 @@ export function AdminProvider({ children }: { children: ReactNode }) {
           </form>
         ) : null}
       </div>
-      {children}
-    </Contexto.Provider>
+      <div className="mx-auto max-w-5xl p-4 sm:p-6 lg:p-8">{children}</div>
+    </>
   );
 }
 
 function rotuloDoPapel(role: LojaDoUsuario["role"]): string {
   return { owner: "Dono", manager: "Gestor", waiter: "Garçom", kitchen: "Cozinha" }[role];
-}
-
-export function useAdmin(): ValorDoAdmin {
-  const valor = useContext(Contexto);
-  if (!valor) throw new Error("useAdmin fora do AdminProvider");
-  return valor;
 }
