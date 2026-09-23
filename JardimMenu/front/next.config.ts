@@ -24,24 +24,23 @@ const withSerwist = withSerwistInit({
 });
 
 /**
- * Versão do app no heartbeat do tablet (JM-184): a do package.json, mais o commit quando o
- * build vem da Vercel. O admin vê qual versão cada tablet está rodando.
+ * Versão do app no heartbeat do tablet (JM-184): a do package.json, mais o commit quando
+ * quem constrói informa qual é (o publicar.sh passa `JM_COMMIT` como build arg). O admin
+ * vê qual versão cada tablet está rodando, e é por ela que se sabe se um aparelho ficou
+ * para trás depois de uma publicação.
  */
 const versaoDoApp = (() => {
   const { version } = JSON.parse(fs.readFileSync(path.join(process.cwd(), "package.json"), "utf8")) as { version: string };
-  const commit = process.env.VERCEL_GIT_COMMIT_SHA?.slice(0, 7);
+  const commit = process.env.JM_COMMIT?.slice(0, 7);
   return commit ? `${version}+${commit}` : version;
 })();
 
 const nextConfig: NextConfig = {
   reactStrictMode: true,
-<<<<<<< HEAD
   env: { NEXT_PUBLIC_APP_VERSION: versaoDoApp },
-=======
   // Servidor próprio em .next/standalone, com só as dependências que o rastreamento
   // provou necessárias. É o que a imagem Docker publica (infra/, NF-012).
   output: "standalone",
->>>>>>> 864c223 (Front: imagem Docker do app e sinal de vida em /api/saude)
   // D33: o back/ fica ao lado do front/, fora desta pasta, e é importado só no servidor.
   experimental: { externalDir: true },
   webpack(config) {
