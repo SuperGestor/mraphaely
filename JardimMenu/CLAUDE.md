@@ -65,8 +65,16 @@ OK do dono do produto. Não anuncie "produção" antes disso.
 
 **Decisões de 21/09/2026:** fechar todas as fases, parando e reportando ao fim de cada
 prompt; **o piloto (Fase D) começa com um aparelho só**, e mais aparelhos entram se ele
-passar; **a integração com o PDV segue em pausa**; hospedagem em Supabase Cloud e Vercel,
-com as contas criadas pelo dono do produto.
+passar; **a integração com o PDV segue em pausa**.
+
+**Decisões de 22/09/2026, que substituem a hospedagem decidida em 21/09:** nada de Supabase
+Cloud e Vercel. **Tudo roda no servidor do dono do produto**, com Supabase auto-hospedado em
+Docker e o Next em imagem própria (`infra/`). HTTPS, backup diário para fora do servidor,
+restauração testada e atualização passam a ser nossa responsabilidade. **O piloto começa
+logo depois da subida**, antes da Fase C, e o alerta de erro (NF-009) vai para o Telegram. O
+Jardim Secreto usa **comanda com nome** (`tab_mode = 'nomeada'`). **Ainda não há domínio:**
+o tablet de produção só é pareado quando ele existir, porque o token vive no
+armazenamento local por origem.
 
 Requisitos da Fase A: `JM-001..009`, `JM-190`, `JM-050..052`, `JM-055`, `JM-060..064`,
 `JM-180`, `NF-001`, `NF-004`, `NF-005`, `NF-006`, `NF-007`, `NF-008`, `NF-009`,
@@ -80,6 +88,17 @@ gerente (JM-141) e os dois caminhos de cancelamento (JM-033, JM-111).
 Nada das Fases C ou D. Nada dos módulos J (§5.10), K (§5.11) e **O (§5.13, canal
 celular)**. Nada do apêndice §17. Nada de integração com PDV, que está em pausa. Do
 Módulo N, a Fase B leva JM-200 a JM-203, JM-208 e JM-209.
+
+**Módulo L, cardápio inteligente (§5.14), Fase B.1.** Existe desde 23/09/2026, quando o
+adendo 01 foi incorporado, e **nada dele entra na Fase B nem na primeira subida a produção**
+(D34): ele é construído em paralelo ao piloto e sobe na primeira atualização depois da
+produção. É a barra de destaque no topo, a sugestão de combinação no momento do pedido e a
+jornada de consumo. Três regras dele são invioláveis: **a sugestão nunca atrasa nem bloqueia
+o pedido** (ela aparece depois de o item entrar na sacola, e o envio funciona igual com o
+painel aberto); **nada é adicionado sem toque explícito do cliente** (nenhuma function do
+módulo escreve pedido, item ou comanda); e **a IA nunca entra no caminho do toque** (ela
+roda em lote, propõe, e uma pessoa aprova no admin, A20). O interruptor do motor por loja e
+por mesa (JM-247) é requisito, não conveniência, e nasce desligado.
 
 > **Sobre hardware:** o desenvolvimento e o teste da Fase A precisam de **um** tablet,
 > não de onze. Se ele ainda não existir, siga em emulador com a resolução alvo e
