@@ -14,6 +14,7 @@ Um registro aqui é o "ter rodado" escrito.
 | `restauracao-AAAA-MM-DD.md` | Restauração completa do backup, executada e conferida | NF-011 |
 | `nf-001-cardapio-AAAA-MM-DD.md` | Cardápio interativo em menos de 2 s, no tablet de verdade | NF-001 |
 | `nf-002-envio-pedido-AAAA-MM-DD.md` | Resposta do envio do pedido | NF-002 |
+| `bancada-AAAA-MM-DD-<requisito>.md` | Execução de bancada que **não** é o aceite: outro aparelho, outra rede, ou só parte do requisito | o mesmo do aceite |
 
 ## Como usar
 
