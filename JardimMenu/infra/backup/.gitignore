@@ -1,0 +1,14 @@
+# A configuração de verdade mora em /etc/jardim-menu/backup.env, fora do
+# repositório. Mas é comum, na hora de instalar, copiar o exemplo para o lado
+# do script e preencher ali mesmo. Esse arquivo tem senha do banco, token do
+# Telegram e credencial do destino externo: nunca pode entrar no git.
+# Só o que termina em .exemplo é versionado.
+*.env
+!*.env.exemplo
+rclone.conf
+!rclone.conf.exemplo
+
+# Backup gerado por engano dentro da pasta do código.
+*.dump
+*.tar.gz
+*.sha256

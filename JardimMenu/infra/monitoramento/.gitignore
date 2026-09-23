@@ -1,0 +1,11 @@
+# A configuração de verdade mora em /etc/jardim-menu/monitoramento.env, fora do
+# repositório. Mas é comum, na hora de instalar, copiar o exemplo para o lado do
+# script e preencher ali mesmo. Esse arquivo tem o token do Telegram: nunca pode
+# entrar no git. Só o que termina em .exemplo é versionado.
+*.env
+!*.env.exemplo
+
+# Estado do monitor (quem já avisou o quê), se alguém apontar o ESTADO para cá
+# em vez de /var/lib/jardim-menu.
+estado/
+*.estado
