@@ -61,10 +61,17 @@ describe("problemasDaJanela", () => {
   });
 
   it(`aceita ${MAXIMO_DE_FAIXAS} faixas e recusa a seguinte, como o zod do servidor`, () => {
-    const sete = faixasDoAtalho("jantar");
-    expect(sete).toHaveLength(MAXIMO_DE_FAIXAS);
-    expect(problemasDaJanela(sete).geral).toBeNull();
-    expect(problemasDaJanela([...sete, faixa(1, "11:30", "15:00")]).geral).toMatch(/No máximo 7/);
+    // Almoço e jantar nos sete dias são 14 faixas: o teto de 21 deixa o caso do JM-006
+    // caber, com folga para um terceiro período (decisão do PO em 22/09/2026).
+    const almocoEJantar = [...faixasDoAtalho("almoco"), ...faixasDoAtalho("jantar")];
+    expect(almocoEJantar).toHaveLength(14);
+    expect(problemasDaJanela(almocoEJantar).geral).toBeNull();
+
+    const noTeto = Array.from({ length: MAXIMO_DE_FAIXAS }, (_, i) => faixa(i % 7, "11:30", "15:00"));
+    expect(problemasDaJanela(noTeto).geral).toBeNull();
+    expect(problemasDaJanela([...noTeto, faixa(1, "18:00", "23:00")]).geral).toMatch(
+      new RegExp(`No máximo ${MAXIMO_DE_FAIXAS}`),
+    );
   });
 
   it("aponta a primeira faixa errada, numerada a partir de 1", () => {

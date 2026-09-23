@@ -18,11 +18,12 @@ import type { TimeWindow } from "./types";
 export const DIAS_DA_SEMANA = ["Domingo", "Segunda", "Terça", "Quarta", "Quinta", "Sexta", "Sábado"] as const;
 
 /**
- * Espelha o `.max(7)` do schema `janela` em back/controllers/admin-rpc.ts, que é o mesmo
- * do horário da loja. O banco (`jm_windows_valid`) não tem teto; quem recusa a oitava
- * faixa é o zod do servidor, e o editor não deixa chegar lá.
+ * Espelha o `.max(21)` do horário do PRODUTO em back/controllers/admin-rpc.ts (o da loja
+ * segue em 7). Almoço e jantar nos sete dias são 14 faixas, e o teto antigo de 7 não
+ * deixava caber o caso que dá nome ao JM-006: o PO subiu para 21 em 22/09/2026. O banco
+ * (`jm_windows_valid`) não tem teto; quem recusa a faixa 22 é o zod do servidor.
  */
-export const MAXIMO_DE_FAIXAS = 7;
+export const MAXIMO_DE_FAIXAS = 21;
 
 /** Mesma expressão de `jm_windows_valid` e do zod do servidor: "HH:MM", de 00:00 a 23:59. */
 const HORA = /^([01][0-9]|2[0-3]):[0-5][0-9]$/;

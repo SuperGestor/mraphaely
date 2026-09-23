@@ -17,7 +17,16 @@ export type Resultado<T> = { ok: true; dados: T } | { ok: false; erro: ErroDeReg
 const uuid = z.uuid();
 const hora = z.string().regex(/^([01][0-9]|2[0-3]):[0-5][0-9]$/);
 const hex = z.string().regex(/^#[0-9a-fA-F]{6}$/);
-const janela = z.array(z.strictObject({ dow: z.number().int().min(0).max(6), open: hora, close: hora })).max(7);
+const faixa = z.strictObject({ dow: z.number().int().min(0).max(6), open: hora, close: hora });
+/** Horário da loja: uma faixa por dia da semana. */
+const janelaDaLoja = z.array(faixa).max(7);
+/**
+ * Horário do produto (JM-006): almoço E jantar nos sete dias são 14 faixas, e o teto de 7,
+ * herdado do horário da loja, não deixava o caso que dá nome ao requisito caber. O PO
+ * decidiu subir para 21 em 22/09/2026, com folga para um terceiro período. O banco
+ * (`jm_windows_valid`) não tem teto: quem limita é este schema.
+ */
+const janelaDoProduto = z.array(faixa).max(21);
 const textoOpcional = (max: number) => z.string().max(max).nullable();
 
 const SCHEMAS = {
@@ -37,7 +46,7 @@ const SCHEMAS = {
     p_price: z.number().min(0).max(99_999_999.99),
     p_emoji: textoOpcional(8),
     p_is_featured: z.boolean(),
-    p_available_window: janela.nullable(),
+    p_available_window: janelaDoProduto.nullable(),
     p_pdv_code: textoOpcional(40),
     p_sort_order: z.number().int().min(0).max(9999),
     p_is_active: z.boolean(),
@@ -77,7 +86,7 @@ const SCHEMAS = {
   }),
   admin_update_store_hours: z.strictObject({
     p_store_id: uuid,
-    p_opening_hours: janela.nullable(),
+    p_opening_hours: janelaDaLoja.nullable(),
     p_timezone: z.string().min(1).max(64),
     p_business_day_start: hora,
   }),

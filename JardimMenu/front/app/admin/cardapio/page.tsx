@@ -112,6 +112,7 @@ export default function AdminCardapio() {
       return;
     }
     setErroDoProduto(null);
+    setAviso(null);
     setAbertura((n) => n + 1);
     setRascunho({
       id: null,
@@ -133,6 +134,7 @@ export default function AdminCardapio() {
   function editar(p: ProdutoAdmin) {
     if (!dados) return;
     setErroDoProduto(null);
+    setAviso(null);
     setAbertura((n) => n + 1);
     setRascunho({
       id: p.id,
@@ -160,6 +162,7 @@ export default function AdminCardapio() {
   async function salvarProduto() {
     if (!rascunho) return;
     setErroDoProduto(null);
+    setAviso(null);
     const preco = Number(rascunho.price.replace(",", "."));
     if (!rascunho.name.trim() || !Number.isFinite(preco) || preco < 0) {
       setErroDoProduto("Nome e preço válido são obrigatórios.");
@@ -190,6 +193,10 @@ export default function AdminCardapio() {
         p_sort_order: Math.max(0, Math.floor(Number(rascunho.sort_order) || 0)),
         p_is_active: rascunho.is_active,
       });
+      // Guarda o id assim que o produto nasce: se a ligação dos grupos falhar logo abaixo,
+      // salvar de novo ATUALIZA o produto criado, em vez de criar um segundo com o mesmo
+      // nome (o nome não é único no banco).
+      setRascunho((r) => (r && !r.id ? { ...r, id: String(id) } : r));
       await source.rpc("admin_set_product_groups", { p_product_id: String(id), p_group_ids: rascunho.grupos });
     }, rascunho.id ? "Produto salvo." : "Produto criado.", setErroDoProduto);
     setSalvando(false);
