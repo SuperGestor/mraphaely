@@ -16,10 +16,15 @@
 #   4. confere que a service_role não vazou para o bundle do navegador (regra 4);
 #   5. sobe/garante a pilha do Supabase e espera o banco ficar saudável;
 #   6. em produção, tira um backup antes de tocar no banco (NF-011);
-#   7. PARA o app;
+#   7. PARA o app — em produção isso vale inclusive para --so-migracoes;
 #   8. aplica as migrações pendentes, uma a uma, registrando cada uma no banco;
 #   9. SOBE o app e espera o /api/saude responder;
-#  10. escreve a linha do que aconteceu em <raiz>/logs/publicacao.log.
+#  10. escreve a linha do que aconteceu em <raiz>/logs/publicacao.log, em toda saída:
+#      deu certo, falhou ou foi interrompida no meio.
+#
+# Se a publicação morrer entre o 7 e o 9 (a sessão de SSH cai, Ctrl+C, falta de luz), o app
+# volta sozinho antes de o script sair. `compose stop` é parada explícita, e o
+# `restart: unless-stopped` do compose não desfaz parada explícita — nem no reboot.
 #
 # O seed.sql NUNCA é aplicado, em ambiente nenhum: ele é massa de desenvolvimento, com
 # usuário e senha fictícios, e existe só para o `supabase db reset` da máquina de quem
@@ -31,7 +36,8 @@
 #   --env <arquivo>      .env do ambiente                  (padrão <raiz>/ambientes/<amb>.env)
 #   --sem-build          não reconstrói a imagem do app
 #   --sem-migracoes      não toca no banco (só troca a versão do app)
-#   --so-migracoes       aplica as migrações e sai, sem mexer no app
+#   --so-migracoes       só aplica as migrações, sem trocar a imagem do app. Em PRODUÇÃO
+#                        o app para enquanto elas rodam, e volta logo depois
 #   --sem-backup         pula o backup de produção. Só com --sim, e fica no log
 #   --permitir-sujo      publica com a árvore do git suja (proibido em produção)
 #   --sim                não pergunta nada
@@ -51,6 +57,12 @@ nota()   { printf '         %s\n' "$*"; }
 aviso()  { printf '   \033[33matencao\033[0m %s\n' "$*"; }
 morrer() { printf '\n\033[31mPUBLICACAO INTERROMPIDA:\033[0m %s\n\n' "$*" >&2; exit 1; }
 
+# A ajuda é o cabeçalho deste arquivo, do início até a primeira linha que não é comentário.
+# Era um `sed -n '2,45p'` fixo, repetido em dois lugares: qualquer linha nova no cabeçalho
+# fazia a ajuda cortar no meio, e o 45 já passava do fim, despejando o `set -Eeuo pipefail`
+# na cara de quem pediu --ajuda. Sem número, não há o que desatualizar.
+ajuda() { sed -n '2,${/^#/!q;p;}' "$0" | sed 's/^# \{0,1\}//'; }
+
 # ---------------------------------------------------------------------------
 # Onde estão as coisas
 # ---------------------------------------------------------------------------
@@ -68,7 +80,7 @@ DIR_MIGRACOES="$DIR_JARDIM/back/supabase/migrations"
 AMBIENTE="${1:-}"
 case "$AMBIENTE" in
   staging|producao) shift ;;
-  -h|--ajuda|--help) sed -n '2,45p' "$0" | sed 's/^# \{0,1\}//'; exit 0 ;;
+  -h|--ajuda|--help) ajuda; exit 0 ;;
   *) morrer "uso: bash publicar.sh <staging|producao> [opções] (--ajuda mostra o resto)" ;;
 esac
 
@@ -91,7 +103,7 @@ while [ $# -gt 0 ]; do
     --sem-backup)    FAZER_BACKUP=nao; shift ;;
     --permitir-sujo) PERMITIR_SUJO=sim; shift ;;
     --sim)           PERGUNTAR=nao; shift ;;
-    -h|--ajuda|--help) sed -n '2,45p' "$0" | sed 's/^# \{0,1\}//'; exit 0 ;;
+    -h|--ajuda|--help) ajuda; exit 0 ;;
     *) morrer "opção desconhecida: $1" ;;
   esac
 done
@@ -235,6 +247,29 @@ done < <(find "$DIR_MIGRACOES" -maxdepth 1 -type f -name '*.sql' | sort)
 feito "${#MIGRACOES[@]} migrações no repositório"
 
 # ---------------------------------------------------------------------------
+# Uma publicação de cada vez, por ambiente
+#
+# Duas publicações do mesmo ambiente ao mesmo tempo (o operador no SSH e alguém repetindo
+# o comando porque "travou") intercalam o laço de migrações, e o `on conflict do nothing`
+# do registro esconde a segunda passagem: fica parecendo que rodou tudo. Pior: uma para o
+# app enquanto a outra o sobe. O backup.sh já trava assim, com flock.
+#
+# Só depois das conferências acima, para quem rodar isto fora de um servidor continuar
+# recebendo o erro de verdade (docker, .env) em vez de um erro de permissão em /opt.
+# ---------------------------------------------------------------------------
+
+mkdir -p "$RAIZ/logs" || morrer "não consegui criar $RAIZ/logs (permissão?).
+       É onde fica o registro das publicações e a trava de publicação simultânea."
+if command -v flock >/dev/null 2>&1; then
+  exec 9>"$RAIZ/logs/publicar-$AMBIENTE.lock"
+  flock -n 9 || morrer "já existe uma publicação de $AMBIENTE rodando neste servidor.
+       Espere ela terminar: cada publicação escreve o que aconteceu em $ARQUIVO_LOG
+       quando sai, e a última linha de lá diz como a anterior terminou."
+else
+  aviso "flock não encontrado: não há como garantir uma publicação de cada vez."
+fi
+
+# ---------------------------------------------------------------------------
 # 2. Confirmação de produção
 # ---------------------------------------------------------------------------
 
@@ -303,6 +338,81 @@ versoes_aplicadas() {
 sha_de() {
   sha256sum "$1" | cut -d' ' -f1
 }
+
+# ---------------------------------------------------------------------------
+# A rede de segurança: publicação interrompida não deixa o app parado
+#
+# Daqui para baixo o script mexe no ambiente de verdade. O passo 8 PARA o app e só o
+# devolve no passo 9, com todo o laço de migrações no meio — e `compose stop` é parada
+# explícita: o `restart: unless-stopped` do compose NÃO desfaz isso, nem quando o daemon
+# reinicia, nem quando a máquina reinicia (é exatamente a diferença entre unless-stopped e
+# always). Não havia trap nenhum neste arquivo: uma queda de SSH (SIGHUP), um Ctrl+C de
+# quem achou que travou, ou falta de luz no meio de uma migração demorada deixavam a loja
+# sem cardápio e sem enviar pedido por tempo indeterminado. E o publicacao.log, escrito só
+# no fim e só no caminho feliz, não registrava nem que uma publicação tinha começado: não
+# sobrava rastro nenhum. O monitoramento avisa que caiu, mas não sobe nada.
+#
+# Agora todo caminho de saída passa por aqui: o app volta e a linha do registro é escrita,
+# dê certo ou não.
+# ---------------------------------------------------------------------------
+
+APP_PAROU=nao          # o passo 8 parou o app
+APP_VOLTOU=nao         # o passo 9, ou esta rede de segurança, devolveu o app
+DEIXAR_APP_PARADO=nao  # migração que falhou: ver o comentário no laço do passo 8
+MIGRACOES_APLICADAS=0
+PUBLICACAO_OK=nao
+
+registrar_log() {
+  # $1 resultado. Nada aqui pode derrubar a saída: isto é o registro, não é o trabalho.
+  printf '%s ambiente=%s resultado=%s revisao=%s imagem=%s migracoes_aplicadas=%s backup=%s por=%s\n' \
+    "$(date -Iseconds)" "$AMBIENTE" "$1" "$REVISAO" "$IMAGEM" "$MIGRACOES_APLICADAS" \
+    "$FAZER_BACKUP" "$(id -un 2>/dev/null || echo desconhecido)" >> "$ARQUIVO_LOG" 2>/dev/null || true
+}
+
+ao_sair() {
+  local status="$1" motivo="$2"
+  # Aqui o -e sai de cena de propósito: este é o último lugar que ainda pode consertar
+  # alguma coisa, e um comando que falhe não pode interromper o resgate. Os sinais passam
+  # a ser ignorados para um segundo Ctrl+C não abortar justamente a volta do app.
+  set +e
+  trap - EXIT
+  trap '' HUP INT TERM
+
+  if [ "$PUBLICACAO_OK" = "sim" ]; then exit "$status"; fi
+
+  printf '\n\033[31mA PUBLICACAO NAO TERMINOU\033[0m (%s)\n' "$motivo" >&2
+  if [ "$APP_PAROU" = "sim" ] && [ "$APP_VOLTOU" = "nao" ]; then
+    if [ "$DEIXAR_APP_PARADO" = "sim" ]; then
+      motivo="$motivo,app-parado-de-proposito"
+      printf '   o app continua PARADO de propósito: leia a mensagem acima.\n' >&2
+    else
+      printf '   o app estava parado. Subindo de volta antes de sair.\n' >&2
+      if compose up -d app >/dev/null 2>&1; then
+        APP_VOLTOU=sim
+        motivo="$motivo,app-de-volta"
+        # Loja no ar é melhor do que loja fechada, mas o banco pode ter ficado no meio do
+        # caminho: quem lê isto precisa conferir, não presumir que está tudo certo.
+        printf '   \033[32mok\033[0m    app de volta no ar, com %s migração(ões) aplicada(s)\n' \
+          "$MIGRACOES_APLICADAS" >&2
+        printf '         nesta rodada. CONFIRA A LOJA e publique de novo com calma.\n' >&2
+      else
+        motivo="$motivo,app-parado"
+        printf '   \033[31mNAO CONSEGUI SUBIR O APP: a loja está fora do ar.\033[0m Rode à mão:\n' >&2
+        printf '     docker compose -p %s --env-file %s -f %s up -d app\n' \
+          "$PROJETO" "$ARQUIVO_ENV" "$COMPOSE" >&2
+      fi
+    fi
+  fi
+  registrar_log "falhou:$motivo"
+  printf '   o que aconteceu ficou registrado em %s\n\n' "$ARQUIVO_LOG" >&2
+  exit "$status"
+}
+
+# HUP é o que chega quando a sessão de SSH cai, que é o caminho mais provável de todos.
+trap 'ao_sair "$?" erro' EXIT
+trap 'ao_sair 129 sinal-HUP' HUP
+trap 'ao_sair 130 sinal-INT' INT
+trap 'ao_sair 143 sinal-TERM' TERM
 
 titulo "Migrações"
 
@@ -419,10 +529,30 @@ if [ "$FAZER_BUILD" = "sim" ]; then
   nota "as NEXT_PUBLIC_ entram no bundle agora, no build: esta imagem serve só ao $AMBIENTE"
   # O commit vai para dentro da imagem (JM-184): é ele que o heartbeat do tablet devolve,
   # e é por ele que se sabe se um aparelho ficou numa versão antiga depois da publicação.
-  # Fora de um checkout git, segue vazio, e vale só a versão do package.json.
-  JM_COMMIT="$(git -C "$RAIZ" rev-parse --short HEAD 2>/dev/null || true)"
+  #
+  # Vem do REVISAO calculado lá em cima, com `git -C "$DIR_JARDIM"` — o checkout de
+  # verdade. Antes esta linha consultava `git -C "$RAIZ"`, e RAIZ é a pasta base do
+  # servidor (/opt/jardim), não o checkout: o preparar-servidor.sh clona em
+  # $RAIZ/repo/JardimMenu e o git não desce procurando repositório. O `|| true` engolia o
+  # erro, JM_COMMIT saía vazio e toda imagem reportava só a versão do package.json —
+  # dois tablets em versões diferentes ficavam indistinguíveis no admin, que existe
+  # justamente para apontar o aparelho que ficou para trás. E só acontecia no servidor: na
+  # máquina de quem programa a imagem é construída à mão, sem passar por este script.
+  #
+  # O sufixo -sujo sai: o que vai na imagem é identificador de commit, e o next.config.ts
+  # corta em 7 caracteres de qualquer jeito.
+  JM_COMMIT=""
+  if [ "$REVISAO" != "sem-git" ]; then JM_COMMIT="${REVISAO%-sujo}"; fi
   export JM_COMMIT
-  if [ -n "$JM_COMMIT" ]; then nota "commit desta imagem: $JM_COMMIT"; fi
+  if [ -n "$JM_COMMIT" ]; then
+    nota "commit desta imagem: $JM_COMMIT"
+  else
+    # Silêncio era metade do defeito: a imagem saía sem identificação e ninguém ficava
+    # sabendo, porque a linha acima só imprimia quando havia commit.
+    aviso "sem commit para gravar na imagem (isto aqui não é um checkout git)."
+    nota "o heartbeat do tablet vai reportar só a versão do package.json, e o admin"
+    nota "não vai conseguir dizer qual aparelho ficou numa versão antiga (JM-184)."
+  fi
   compose build app
   feito "imagem $IMAGEM construída"
 
@@ -481,17 +611,41 @@ fi
 # 8. O app para, as migrações rodam, o app volta
 # ---------------------------------------------------------------------------
 
-APP_PAROU=nao
-if [ "${#PENDENTES[@]}" -gt 0 ] && [ "$FAZER_MIGRACOES" = "sim" ] && [ "$MEXER_NO_APP" = "sim" ]; then
+# Quem para o app: PRODUÇÃO sempre que for aplicar migração, e os outros ambientes só
+# quando a publicação já fosse mexer no app de qualquer jeito.
+#
+# --so-migracoes zera MEXER_NO_APP, e esta condição exigia MEXER_NO_APP=sim enquanto o laço
+# de migrações logo abaixo não exigia nada: a ÚNICA opção do script que aplicava DDL com a
+# loja atendendo era justamente a que a ajuda descrevia como "sem mexer no app", e a
+# mensagem do fim ainda confirmava que "o app não foi tocado". Renomear (ou derrubar) uma
+# coluna de order_items com um tablet enviando pedido quebra a function security definer
+# que está com o plano antigo em mãos, e o cliente vê erro no envio com a casa cheia.
+# --so-migracoes continua sem trocar a imagem do app — em produção, o app para e volta.
+PARAR_O_APP=nao
+if [ "${#PENDENTES[@]}" -gt 0 ] && [ "$FAZER_MIGRACOES" = "sim" ]; then
+  if [ "$MEXER_NO_APP" = "sim" ] || [ "$AMBIENTE" = "producao" ]; then
+    PARAR_O_APP=sim
+  fi
+fi
+
+if [ "$PARAR_O_APP" = "sim" ]; then
   titulo "Parando o app"
   # Migração com o app atendendo é o caminho para erro de coluna que não existe mais no
   # meio de um pedido. O app fica fora do ar de propósito, e volta logo abaixo.
+  if [ "$MEXER_NO_APP" = "nao" ]; then
+    nota "--so-migracoes não troca a imagem do app, mas em produção ele para enquanto o"
+    nota "schema muda: é o único jeito de não quebrar um pedido no meio. Volta assim que"
+    nota "as migrações terminarem."
+  fi
   compose stop app >/dev/null 2>&1 || true
   APP_PAROU=sim
   feito "app parado"
+elif [ "$MEXER_NO_APP" = "nao" ] && [ "${#PENDENTES[@]}" -gt 0 ] && [ "$FAZER_MIGRACOES" = "sim" ]; then
+  # Fora de produção o app segue no ar de propósito: staging é justamente onde se descobre
+  # o que a migração quebra com o app rodando, e não há pedido de cliente para perder.
+  aviso "as migrações vão rodar com o app de $AMBIENTE no ar (--so-migracoes)."
 fi
 
-MIGRACOES_APLICADAS=0
 if [ "$FAZER_MIGRACOES" = "nao" ]; then
   aviso "migrações puladas por --sem-migracoes"
 elif [ "${#PENDENTES[@]}" -gt 0 ]; then
@@ -526,25 +680,44 @@ values ('$VERSAO', '$NOME_CURTO')
 on conflict (version) do nothing;
 SQL
     } | psql_rodar -q >/dev/null; then
+      # A rede de segurança lá de cima devolve o app sozinha quando a publicação morre no
+      # meio. Aqui, NÃO: migração que falhou deixa o banco no meio do caminho, e subir o
+      # app em cima disso é decisão de quem está lendo esta mensagem, não do script. Quem
+      # foi interrompido não leu mensagem nenhuma; quem chegou até aqui leu.
+      DEIXAR_APP_PARADO=sim
+      RECADO_APP="O app não foi parado por esta publicação: ele segue no ar, agora em cima
+       de um banco que ficou no meio do caminho. Confira a loja."
+      if [ "$APP_PAROU" = "sim" ]; then
+        RECADO_APP="O app está PARADO, e continua parado de propósito, porque o banco
+       ficou no meio do caminho. Para voltar o app ao ar sem migrar:
+         bash $0 $AMBIENTE --sem-migracoes --sem-build"
+      fi
       morrer "a migração $NOME_ARQUIVO falhou.
        O banco está como o arquivo deixou: cada migração deste projeto roda dentro da
        própria transação, então ou entrou inteira ou não entrou nada.
        As anteriores desta publicação já estão aplicadas e registradas.
-       O app está PARADO. Corrija a migração, publique em staging e volte.
-       Para voltar o app ao ar sem migrar:
-         bash $0 $AMBIENTE --sem-migracoes --sem-build"
+       $RECADO_APP
+       Corrija a migração, publique em staging e volte.
+       O que aconteceu está registrado em $ARQUIVO_LOG."
     fi
     MIGRACOES_APLICADAS=$((MIGRACOES_APLICADAS + 1))
     feito "$NOME_ARQUIVO aplicada e registrada"
   done
 fi
 
-if [ "$MEXER_NO_APP" = "nao" ]; then
+# O app volta quando a publicação era para mexer nele OU quando foi esta publicação que o
+# parou — o segundo caso é o --so-migracoes em produção, que para o app para migrar e
+# precisa devolvê-lo. Antes, quem entrasse aqui com MEXER_NO_APP=nao caía direto no
+# "Pronto (só migrações)", que nunca sobe nada.
+if [ "$MEXER_NO_APP" = "nao" ] && [ "$APP_PAROU" = "nao" ]; then
   titulo "Pronto (só migrações)"
   nota "o app não foi tocado, como pedido com --so-migracoes"
 else
   titulo "Subindo o app"
   compose up -d app
+  # A partir daqui o app já foi mandado subir: a rede de segurança não precisa mais
+  # devolvê-lo, e o que vem abaixo é conferência.
+  APP_VOLTOU=sim
   ID_APP=""
   for _ in $(seq 1 30); do
     ID_APP="$(container_de "$PROJETO" app)"
@@ -566,17 +739,20 @@ else
        O /api/saude não respondeu. Veja:
          docker compose -p $PROJETO --env-file $ARQUIVO_ENV -f $COMPOSE logs app" ;;
   esac
-  [ "$APP_PAROU" = "sim" ] && feito "app voltou ao ar depois da migração"
+  if [ "$APP_PAROU" = "sim" ]; then feito "app voltou ao ar depois da migração"; fi
+  if [ "$MEXER_NO_APP" = "nao" ]; then
+    nota "a imagem do app é a mesma de antes: --so-migracoes só aplicou as migrações"
+  fi
 fi
 
 # ---------------------------------------------------------------------------
 # 9. Registro do que aconteceu
 # ---------------------------------------------------------------------------
 
-mkdir -p "$(dirname "$ARQUIVO_LOG")"
-printf '%s ambiente=%s revisao=%s imagem=%s migracoes_aplicadas=%s backup=%s por=%s\n' \
-  "$(date -Iseconds)" "$AMBIENTE" "$REVISAO" "$IMAGEM" "$MIGRACOES_APLICADAS" \
-  "$FAZER_BACKUP" "$(id -un 2>/dev/null || echo desconhecido)" >> "$ARQUIVO_LOG"
+# Mesma função que a rede de segurança usa nos caminhos de erro, para o registro ter a
+# mesma cara nos dois casos e o `resultado=` dizer qual foi qual.
+registrar_log ok
+PUBLICACAO_OK=sim
 
 titulo "Publicado"
 cat <<FIM
@@ -594,3 +770,7 @@ cat <<FIM
     - a loja de teste carrega o cardápio
 
 FIM
+
+# Explícito para a rede de segurança não receber o status de um printf que falhou (terminal
+# que sumiu) e transformar publicação boa em publicação "que não terminou".
+exit 0
