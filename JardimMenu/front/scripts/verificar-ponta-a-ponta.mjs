@@ -64,7 +64,7 @@ async function http(metodo, caminho, { corpo, cookie, headers = {}, form } = {})
   return { status: r.status, json, texto, headers: r.headers };
 }
 
-async function entrar(email) {
+async function entrar(email, senha = SENHA) {
   const pote = new Map();
   const supabase = createServerClient(SB_URL, SB_ANON, {
     cookies: {
@@ -77,7 +77,7 @@ async function entrar(email) {
       },
     },
   });
-  const { error } = await supabase.auth.signInWithPassword({ email, password: SENHA });
+  const { error } = await supabase.auth.signInWithPassword({ email, password: senha });
   if (error) throw new Error(`login de ${email} falhou: ${error.message}`);
   return { email, supabase, cookie: [...pote].map(([n, v]) => `${n}=${v}`).join('; ') };
 }
@@ -104,7 +104,7 @@ secao('1. Login da equipe (@supabase/ssr) e contexto');
 let dono, gestor, garcom, outraLoja;
 try {
   [dono, gestor, garcom, outraLoja] = await Promise.all(
-    ['dono@jardim.local', 'gestor@jardim.local', 'garcom@jardim.local', 'gestor@confraria.local'].map(entrar),
+    ['dono@jardim.local', 'gestor@jardim.local', 'garcom@jardim.local', 'gestor@confraria.local'].map((e) => entrar(e)),   // não `.map(entrar)`: o índice viraria a senha
   );
   confere(true, 'os quatro usuários do seed entram');
 } catch (e) {
@@ -371,19 +371,22 @@ confere([403, 404].includes(r.status), 'gestor da Confraria não envia foto para
 
 // ============================================================
 secao('10. Usuários: convite, papel, desativação (JM-052)');
+// `modo: 'convite'` explícito: desde 24/09/2026 o PADRÃO da rota é criar a conta com senha,
+// porque sem SMTP o convite não sai e ninguém entra no sistema. O convite continua
+// existindo, e é este bloco que o prova — mas agora ele é pedido, não presumido.
 const carimbo = Date.now();
 const emailNovo = `convite.${carimbo}@jardim.local`;
 const emailDoGestor = `tentativa.${carimbo}@jardim.local`;
-r = await http('POST', '/api/admin/usuarios', { cookie: gestor.cookie, corpo: { store_id: JARDIM, email: emailDoGestor, role: 'waiter' } });
+r = await http('POST', '/api/admin/usuarios', { cookie: gestor.cookie, corpo: { modo: 'convite', store_id: JARDIM, email: emailDoGestor, role: 'waiter' } });
 confere(r.status === 403, 'gestor não convida (só o dono)', det(r));
-r = await http('POST', '/api/admin/usuarios', { cookie: dono.cookie, corpo: { store_id: JARDIM, email: emailNovo, role: 'waiter' } });
+r = await http('POST', '/api/admin/usuarios', { cookie: dono.cookie, corpo: { modo: 'convite', store_id: JARDIM, email: emailNovo, role: 'waiter' } });
 const vinculoNovo = r.json?.store_user_id;
 confere(r.status === 201 && /^[0-9a-f-]{36}$/.test(vinculoNovo ?? ''), 'dono convida um garçom', det(r));
 // Quem ainda não aceitou recebe o convite de novo, no MESMO vínculo: o Auth reenvia e a
 // function faz upsert. Só e-mail com conta confirmada é recusado.
-r = await http('POST', '/api/admin/usuarios', { cookie: dono.cookie, corpo: { store_id: JARDIM, email: emailNovo, role: 'waiter' } });
+r = await http('POST', '/api/admin/usuarios', { cookie: dono.cookie, corpo: { modo: 'convite', store_id: JARDIM, email: emailNovo, role: 'waiter' } });
 confere(r.status === 201 && r.json?.store_user_id === vinculoNovo, 'convite repetido a quem não aceitou reenvia, no mesmo vínculo', det(r));
-r = await http('POST', '/api/admin/usuarios', { cookie: dono.cookie, corpo: { store_id: JARDIM, email: 'garcom@jardim.local', role: 'manager' } });
+r = await http('POST', '/api/admin/usuarios', { cookie: dono.cookie, corpo: { modo: 'convite', store_id: JARDIM, email: 'garcom@jardim.local', role: 'manager' } });
 confere(r.status === 409, 'convite para e-mail com conta confirmada responde 409', det(r));
 
 let caixa = [];
@@ -412,6 +415,48 @@ r = await http('POST', `/api/admin/usuarios/${vinculoDoDono?.id}`, { cookie: don
 confere([409, 422].includes(r.status), 'a loja nunca fica sem dono', det(r));
 r = await http('POST', `/api/admin/usuarios/${novo?.id}`, { cookie: dono.cookie, corpo: { acao: 'desativar' } });
 confere(r.status === 200, 'dono desativa o convidado', det(r));
+
+// ============================================================
+secao('10.1 Acesso sem e-mail (JM-052, decisão do PO de 24/09/2026)');
+// Sem SMTP o convite não sai, e sem convite ninguém cria conta — nem o dono, que precisa
+// dela para parear o tablet. Este caminho cria a conta JÁ confirmada e devolve a senha
+// provisória UMA vez, como o token do tablet (NF-006). Num restaurante isso é natural: a
+// pessoa está ali, na frente do dono, no dia em que entra.
+const emailSemConvite = `acesso.${Date.now()}@jardim.local`;
+r = await http('POST', '/api/admin/usuarios', {
+  cookie: dono.cookie,
+  corpo: { store_id: JARDIM, email: emailSemConvite, role: 'waiter' },
+});
+confere(r.status === 201 && typeof r.json?.senha_provisoria === 'string', 'dono cria acesso sem e-mail, e recebe a senha uma vez', det(r));
+const senhaEntregue = r.json?.senha_provisoria ?? '';
+confere(senhaEntregue.length === 14 && !/[O0Il1S5]/.test(senhaEntregue), 'a senha não tem caractere que se confunde ao ditar', `${senhaEntregue.length} caracteres`);
+
+const quemEntrou = await entrar(emailSemConvite, senhaEntregue);
+confere(!!quemEntrou.cookie, 'e a pessoa entra com ela, sem clicar em link nenhum');
+
+r = await http('POST', '/api/admin/usuarios', {
+  cookie: quemEntrou.cookie,
+  corpo: { store_id: JARDIM, email: `outro.${Date.now()}@jardim.local`, role: 'waiter' },
+});
+confere(r.status === 403, 'garçom não cria acesso: o papel é conferido antes da service_role', det(r));
+
+// Sem SMTP também não existe "esqueci minha senha" self-service. O caminho de volta é o
+// dono emitir outra, e ele é só do dono.
+const listaSemConvite = await http('GET', `/api/admin/dados/usuarios?loja=${JARDIM}`, { cookie: dono.cookie });
+const vinculoSemConvite = (listaSemConvite.json ?? []).find?.((u) => u.email === emailSemConvite);
+r = await http('POST', `/api/admin/usuarios/${vinculoSemConvite?.id}`, { cookie: dono.cookie, corpo: { acao: 'nova_senha' } });
+confere(r.status === 200 && typeof r.json?.senha_provisoria === 'string', 'dono emite senha nova para quem esqueceu', det(r));
+const senhaReemitida = r.json?.senha_provisoria ?? '';
+confere(senhaReemitida !== senhaEntregue, 'e ela é outra senha');
+
+let aindaEntraComAntiga = true;
+try { await entrar(emailSemConvite, senhaEntregue); } catch { aindaEntraComAntiga = false; }
+confere(!aindaEntraComAntiga, 'a senha antiga para de valer na hora');
+const comSenhaReemitida = await entrar(emailSemConvite, senhaReemitida);
+confere(!!comSenhaReemitida.cookie, 'e a nova vale');
+
+r = await http('POST', `/api/admin/usuarios/${vinculoSemConvite?.id}`, { cookie: comSenhaReemitida.cookie, corpo: { acao: 'nova_senha' } });
+confere(r.status === 403, 'garçom não emite senha nem para si mesmo', det(r));
 
 // ============================================================
 secao('11. Sair');
