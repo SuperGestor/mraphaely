@@ -24,7 +24,7 @@
 #   --usuario <nome>        usuário de publicação        (padrão jardim)
 #   --raiz <caminho>        pasta base no servidor       (padrão /opt/jardim)
 #   --chave-ssh <arquivo>   arquivo com uma ou mais chaves públicas a autorizar
-#   --porta-ssh <n>         porta a liberar no firewall  (padrão: a porta atual do sshd)
+#   --porta-ssh <n>         porta a liberar no firewall  (padrão: as que o SSH escuta)
 #   --versao-node <n>       série do Node                (padrão 22)
 #   --fuso <zona>           fuso do servidor             (padrão America/Sao_Paulo)
 #   --swap <GiB>            cria /swapfile deste tamanho (padrão 0, não cria)
@@ -78,7 +78,9 @@ while [ $# -gt 0 ]; do
     --sem-firewall) MEXER_FIREWALL=nao; shift ;;
     --sem-ssh)      MEXER_SSH=nao; shift ;;
     --sem-node)     INSTALAR_NODE=nao; shift ;;
-    -h|--ajuda|--help) sed -n '2,45p' "$0" | sed 's/^# \{0,1\}//'; exit 0 ;;
+    # Até a linha 40, que é onde o cabeçalho acaba: com 45 a ajuda imprimia o
+    # `set -Eeuo pipefail` e o traço da seção seguinte junto.
+    -h|--ajuda|--help) sed -n '2,40p' "$0" | sed 's/^# \{0,1\}//'; exit 0 ;;
     *) morrer "opção desconhecida: $1 (use --ajuda)" ;;
   esac
 done
@@ -107,7 +109,22 @@ ARQUITETURA="$(dpkg --print-architecture)"
 [ "$ARQUITETURA" = "amd64" ] || aviso "arquitetura $ARQUITETURA: as imagens fixadas são x86_64 (amd64)."
 
 export DEBIAN_FRONTEND=noninteractive
-apt-get update -qq
+# Este é o primeiro comando que depende da rede, e é onde a máquina aparece quebrada
+# quando uma rodada anterior caiu no meio do download da chave do Docker (seção 2): fica
+# um /etc/apt/keyrings/docker.asc truncado com o docker.list apontando para ele, e daí em
+# diante TODO apt-get update da máquina falha na verificação da assinatura — inclusive
+# este, que morreria com a mensagem do apt sem dizer onde é o defeito. Como as duas peças
+# são deste script e a seção 2 as refaz (agora conferindo o conteúdo da chave), tiramos o
+# par do caminho e tentamos mais uma vez.
+if ! apt-get update -qq; then
+  if [ -e /etc/apt/sources.list.d/docker.list ]; then
+    aviso "apt-get update falhou com o repositório do Docker instalado; vou refazer chave e lista."
+    rm -f /etc/apt/sources.list.d/docker.list /etc/apt/keyrings/docker.asc
+    apt-get update -qq || morrer "apt-get update continua falhando. Confira a rede e /etc/apt/sources.list.d/."
+  else
+    morrer "apt-get update falhou. Confira a rede e /etc/apt/sources.list.d/."
+  fi
+fi
 # ca-certificates e curl para os repositórios; gnupg para as chaves; git para trazer o
 # repositório da aplicação; ufw para o firewall; jq porque todo diagnóstico no servidor
 # acaba precisando; tzdata para o fuso.
@@ -133,12 +150,31 @@ fi
 
 titulo "Docker"
 
-if [ -f /etc/apt/keyrings/docker.asc ]; then
+# O teste é de CONTEÚDO, e não de existência. `curl -o` cria o arquivo assim que o corpo
+# começa a chegar: uma queda de conexão no meio, ou um portal cativo devolvendo HTML com
+# 200, deixa um docker.asc truncado ou inválido. Com o antigo `[ -f ... ]`, a rodada
+# seguinte — que o cabeçalho manda fazer, porque "tudo aqui é idempotente" — dizia
+# "ja feito", escrevia o docker.list apontando para o lixo e quebrava o apt da máquina
+# inteira, sem que nada apontasse a chave como culpada.
+if gpg --show-keys /etc/apt/keyrings/docker.asc >/dev/null 2>&1; then
   pulado "chave do repositório Docker"
 else
   install -m 0755 -d /etc/apt/keyrings
-  curl -fsSL "https://download.docker.com/linux/${ID}/gpg" -o /etc/apt/keyrings/docker.asc
-  chmod a+r /etc/apt/keyrings/docker.asc
+  # Baixa para temporário e só promove depois de o gpg conseguir ler: assim o arquivo no
+  # keyrings ou é uma chave boa ou não existe, nunca um meio-termo que sobrevive à rodada.
+  # (`curl --remove-on-error` resolveria o truncado, mas só existe a partir do curl 7.83,
+  # e o alvo inclui o Ubuntu 22.04, que traz o 7.81.)
+  TMP_CHAVE="$(mktemp)"
+  if ! curl -fsSL "https://download.docker.com/linux/${ID}/gpg" -o "$TMP_CHAVE"; then
+    rm -f "$TMP_CHAVE"
+    morrer "não consegui baixar a chave do repositório Docker (rede? proxy?). Rode de novo."
+  fi
+  if ! gpg --show-keys "$TMP_CHAVE" >/dev/null 2>&1; then
+    rm -f "$TMP_CHAVE"
+    morrer "o que baixei de download.docker.com não é uma chave OpenPGP (portal cativo? proxy?). Rode de novo."
+  fi
+  install -m 0644 "$TMP_CHAVE" /etc/apt/keyrings/docker.asc
+  rm -f "$TMP_CHAVE"
   feito "chave do repositório Docker"
 fi
 
@@ -289,14 +325,31 @@ else
   if [ -n "$CHAVE_SSH" ]; then
     [ -r "$CHAVE_SSH" ] || morrer "não consigo ler $CHAVE_SSH"
     NOVAS=0
-    while IFS= read -r LINHA; do
+    ACHADAS=0
+    # O `|| [ -n "$LINHA" ]` não é enfeite: no EOF sem \n final o read devolve status
+    # diferente de zero, o corpo do laço não roda e a ÚLTIMA linha do arquivo é lida e
+    # jogada fora. Num .pub de uma chave só — montado com printf, colado do painel do
+    # provedor ou salvo por editor de Windows — essa linha é a chave inteira, e o script
+    # respondia "já estavam autorizadas" sem ter autorizado nada. Quem confiasse na
+    # mensagem para aposentar a chave antiga ficava do lado de fora, com senha desligada.
+    # O corte do \r é a mesma armadilha do Windows que o publicar.sh já trata no .env.
+    while IFS= read -r LINHA || [ -n "$LINHA" ]; do
+      LINHA="${LINHA%$'\r'}"
       # Linha vazia e comentário não são chave.
       case "$LINHA" in ""|\#*) continue ;; esac
+      ACHADAS=$((ACHADAS + 1))
       if grep -qxF "$LINHA" "$AUTORIZADAS"; then continue; fi
       printf '%s\n' "$LINHA" >> "$AUTORIZADAS"
       NOVAS=$((NOVAS + 1))
     done < "$CHAVE_SSH"
-    [ "$NOVAS" -gt 0 ] && feito "$NOVAS chave(s) autorizada(s) para $USUARIO" || pulado "chaves de $CHAVE_SSH já estavam autorizadas"
+    # Arquivo sem chave nenhuma é engano de caminho, não "nada a fazer": seguir daqui
+    # desligaria a senha do SSH apoiado numa chave que ninguém autorizou.
+    [ "$ACHADAS" -gt 0 ] || morrer "não achei nenhuma chave pública em $CHAVE_SSH"
+    if [ "$NOVAS" -gt 0 ]; then
+      feito "$NOVAS de $ACHADAS chave(s) de $CHAVE_SSH autorizada(s) para $USUARIO"
+    else
+      pulado "as $ACHADAS chave(s) de $CHAVE_SSH já estavam autorizadas"
+    fi
   fi
 
   # Se o root já entra por chave, aproveitamos as dele: é o caso comum do VPS recém
@@ -377,27 +430,66 @@ titulo "Firewall"
 if [ "$MEXER_FIREWALL" = "nao" ]; then
   pulado "firewall (pedido com --sem-firewall)"
 else
-  if [ -z "$PORTA_SSH" ]; then
-    # A porta que o sshd está mesmo usando, e não a que supomos: em VPS revendido é
-    # comum o provedor já ter trocado.
-    PORTA_SSH="$(sshd -T 2>/dev/null | awk '/^port /{print $2; exit}' || true)"
-    PORTA_SSH="${PORTA_SSH:-22}"
+  if [ -n "$PORTA_SSH" ]; then
+    case "$PORTA_SSH" in
+      ''|*[!0-9]*) morrer "--porta-ssh precisa ser um número, recebi '$PORTA_SSH'" ;;
+    esac
+    PORTAS_SSH=("$PORTA_SSH")
+  else
+    # A porta tem de vir do que está ESCUTANDO, não do arquivo de configuração. Desde o
+    # Ubuntu 22.10 — e no 24.04, que este script declara como alvo — o sshd é ativado por
+    # socket: quem define a porta é o ListenStream do ssh.socket, e o `Port` do
+    # sshd_config deixa de ter efeito. Este bloco perguntava só ao `sshd -T`, que lê o
+    # sshd_config, e nos dois sentidos errava: porta trocada no socket → liberava a 22 e
+    # descartava a porta real; porta trocada só no sshd_config → liberava uma porta que
+    # ninguém escuta e fechava a 22. O estrago não aparece na hora, porque o ufw aceita a
+    # sessão em curso (ESTABLISHED) e derruba só as conexões NOVAS — a descoberta é na
+    # próxima vez que alguém tenta entrar, já com a senha desligada pela seção 6, isto é,
+    # pelo console de resgate do provedor.
+    CANDIDATAS=""
+    # a) o que o kernel mostra escutando em nome do sshd. É a fonte mais próxima da
+    #    verdade; some quando o sshd está só socket-ativado e ocioso, daí o item (b).
+    if command -v ss >/dev/null 2>&1; then
+      CANDIDATAS+="$(ss -Htlnp 2>/dev/null | awk '/"sshd"/ { n = split($4, p, ":"); print p[n] }')"$'\n' || true
+    fi
+    # b) o socket do systemd, que é quem manda quando a ativação é por socket. Vem daqui e
+    #    não do `ss`, porque no `ss` o dono do socket aparece como "systemd", que também é
+    #    dono de vários outros que nada têm a ver com SSH.
+    for UNIDADE in ssh.socket sshd.socket; do
+      CANDIDATAS+="$(systemctl show -p Listen "$UNIDADE" 2>/dev/null | tr ' ' '\n' | sed -n 's/.*:\([0-9]\{1,5\}\)$/\1/p')"$'\n' || true
+    done
+    # c) o sshd_config, que continua valendo quando NÃO há ativação por socket.
+    CANDIDATAS+="$(sshd -T 2>/dev/null | awk '/^port /{print $2}')"$'\n' || true
+
+    mapfile -t PORTAS_SSH < <(printf '%s' "$CANDIDATAS" | awk '$1 ~ /^[0-9]+$/ && $1 > 0 && $1 < 65536' | sort -un)
+
+    if [ "${#PORTAS_SSH[@]}" -eq 0 ]; then
+      # Chutar 22 aqui é o que trancava o servidor. Perguntar custa uma linha de comando.
+      morrer "não descobri em que porta o SSH escuta (ss, ssh.socket e sshd -T não disseram nada). Rode de novo com --porta-ssh <n>: ligar o ufw sem a regra certa tranca você do lado de fora."
+    fi
+    if [ "${#PORTAS_SSH[@]}" -gt 1 ]; then
+      # Liberamos TODAS em vez de escolher uma: quando o socket e o sshd_config discordam,
+      # as duas podem estar mesmo escutando, e fechar a "errada" é justamente o acidente
+      # que este bloco existe para evitar. Quem quiser só uma passa --porta-ssh depois de
+      # acertar o sshd, com outra sessão aberta para testar.
+      aviso "o SSH aparece em mais de uma porta (${PORTAS_SSH[*]}); vou liberar todas."
+    fi
+    feito "porta(s) de SSH em uso: ${PORTAS_SSH[*]}"
   fi
-  case "$PORTA_SSH" in
-    ''|*[!0-9]*) morrer "--porta-ssh precisa ser um número, recebi '$PORTA_SSH'" ;;
-  esac
 
   ufw default deny incoming  >/dev/null
   ufw default allow outgoing >/dev/null
   # A regra do SSH vem ANTES do enable, sempre.
-  ufw allow "${PORTA_SSH}/tcp" comment 'SSH' >/dev/null
+  for PORTA in "${PORTAS_SSH[@]}"; do
+    ufw allow "${PORTA}/tcp" comment 'SSH' >/dev/null
+  done
   ufw allow 80/tcp  comment 'HTTP: desafio ACME e redirecionamento' >/dev/null
   ufw allow 443/tcp comment 'HTTPS' >/dev/null
   # O compose do proxy publica 443/udp para o HTTP/3. Sem esta linha o navegador tenta o
   # caminho anunciado e espera o tempo todo antes de cair para TCP.
   ufw allow 443/udp comment 'HTTP/3 (QUIC)' >/dev/null
   ufw --force enable >/dev/null
-  feito "ufw ligado: entra só ${PORTA_SSH}/tcp, 80/tcp, 443/tcp e 443/udp"
+  feito "ufw ligado: entra só SSH em ${PORTAS_SSH[*]} (tcp), 80/tcp, 443/tcp e 443/udp"
   # Porta publicada por contêiner passa por fora do ufw (o Docker escreve direto no
   # iptables). Na nossa pilha só o Caddy publica porta, e são justamente 80 e 443, que
   # já queremos abertas. Se um dia alguém acrescentar `ports:` em outro serviço, ele
