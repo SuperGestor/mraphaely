@@ -2,13 +2,25 @@
 Description=Dispara a verificação de saúde do Jardim Menu a cada minuto
 
 [Timer]
-# A cada minuto, no segundo zero. Um minuto é o intervalo do requisito, e o
-# script só avisa depois de duas falhas seguidas: o alarme de verdade chega em
-# cerca de dois minutos, e um soluço de rede não vira aviso.
-OnCalendar=*:0/1
-# Começa um pouco depois do boot, para não disparar enquanto o Docker ainda
-# está subindo os contêineres e acusar queda que é só partida.
+# Cadeia monotônica, e não OnCalendar, de propósito.
+#
+# Antes havia OnCalendar=*:0/1 ao lado de OnBootSec=3min, com o comentário de que o
+# OnBootSec segurava a primeira verificação até o Docker terminar de subir os
+# contêineres. Não segurava: quando um timer tem várias expressões, ele dispara quando
+# QUALQUER uma delas vence, e o OnCalendar vencia na virada do minuto seguinte à
+# ativação — menos de 60 s depois do boot, com o db ainda no pg_isready, o auth
+# esperando o db ficar healthy e o app dentro do start_period de 20 s. Duas rodadas
+# assim e saíam os "CAIU" de app, API e contêiner dos dois ambientes às 3h da manhã,
+# por causa de uma partida perfeitamente normal. E After=docker.service no .service não
+# resolve: o docker fica ativo quando o daemon está pronto, não quando os contêineres
+# estão de pé.
+#
+# Com OnBootSec + OnUnitActiveSec a carência existe de verdade, e o intervalo passa a
+# contar da última ativação da verificação, o que também evita uma rodada atropelar a
+# seguinte. O verificar.sh ainda guarda a mesma carência por dentro (CARENCIA_BOOT_SEGUNDOS),
+# para quem o chamar por cron ou à mão logo depois de ligar a máquina.
 OnBootSec=3min
+OnUnitActiveSec=1min
 AccuracySec=5s
 # Sem Persistent: verificação atrasada não interessa. O que interessa é agora.
 Persistent=false

@@ -41,11 +41,19 @@ jm_duracao() {
 # Canal escolhido pelo PO em 22/09/2026. As mesmas duas variáveis servem ao
 # aviso de erro do app (NF-009), que outra frente implementa: aqui elas são só
 # repassadas pela configuração.
+#
+# Devolve 0 quando o Telegram aceitou e 1 quando recusou. Isto não é detalhe: enquanto
+# devolvia 0 sempre, o verificar.sh gravava "já avisei que caiu" para um aviso que o
+# Telegram tinha respondido com 429, e a queda sumia do canal por uma hora — ou para
+# sempre, com MINUTOS_LEMBRETE=0. Quem chamar precisa tratar o 1; e cuidado com o
+# `set -e`: chamada solta, um envio recusado passa a derrubar o script.
 jm_telegram() {
   local texto="$1"
   local token="${ALERT_TELEGRAM_BOT_TOKEN:-}"
   local chat="${ALERT_TELEGRAM_CHAT_ID:-}"
 
+  # Sem canal configurado devolve 0 de propósito: não há o que tentar de novo, e um 1 aqui
+  # faria o monitor repetir o mesmo aviso no journal a cada minuto, para sempre.
   if [ -z "$token" ] || [ -z "$chat" ]; then
     jm_aviso "Telegram não configurado. Aviso só no log."
     jm_log "AVISO QUE SERIA ENVIADO: $texto"
@@ -61,11 +69,12 @@ jm_telegram() {
 
   if [ "$http" = "200" ]; then
     jm_log "Aviso enviado ao Telegram."
-  else
-    # Sem ecoar a resposta: ela repete a URL, e a URL carrega o token.
-    jm_aviso "Telegram respondeu HTTP ${http}; o aviso não chegou."
+    return 0
   fi
-  return 0
+
+  # Sem ecoar a resposta: ela repete a URL, e a URL carrega o token.
+  jm_aviso "Telegram respondeu HTTP ${http}; o aviso não chegou."
+  return 1
 }
 
 # ---------------------------------------------------------------- configuração

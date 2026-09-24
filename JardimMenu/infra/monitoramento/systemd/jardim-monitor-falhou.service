@@ -1,0 +1,22 @@
+[Unit]
+# Disparada pelo OnFailure= do jardim-monitor.service. Existe para que uma verificação
+# que morre antes de verificar qualquer coisa não morra calada.
+Description=Avisa no Telegram que a verificação de saúde do Jardim Menu falhou
+Documentation=file:/opt/jardim-menu/JardimMenu/infra/monitoramento/README.md
+After=network-online.target
+# Sem OnFailure= aqui, de propósito: o avisador não pode chamar a si mesmo quando o
+# aviso é justamente o que falhou.
+
+[Service]
+Type=oneshot
+User=root
+# Ajuste o caminho se o repositório não estiver em /opt/jardim-menu.
+ExecStart=/opt/jardim-menu/JardimMenu/infra/monitoramento/avisar-falha.sh jardim-monitor.service
+Environment=JARDIM_MONITOR_ENV=/etc/jardim-menu/monitoramento.env
+# Folga para o journalctl e para os 20 s de paciência do envio.
+TimeoutStartSec=60
+StandardOutput=journal
+StandardError=journal
+SyslogIdentifier=jardim-monitor-falhou
+
+# Sem [Install]: quem chama é o OnFailure= do jardim-monitor.service.

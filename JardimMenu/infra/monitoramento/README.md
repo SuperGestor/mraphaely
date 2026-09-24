@@ -14,10 +14,12 @@ está em `docs/operacao/MONITORAMENTO.md`. Aqui ficam a instalação e as opçõ
 | Arquivo | Para que serve |
 |---|---|
 | `verificar.sh` | A verificação: app, API, contêineres e disco, com controle de repetição |
+| `avisar-falha.sh` | O aviso de último recurso: fala quando a própria verificação não roda |
 | `lib/comum.sh` | Funções comuns (log, Telegram, configuração) |
 | `exemplo/monitoramento.env.exemplo` | Modelo da configuração. O real fica em `/etc/jardim-menu/monitoramento.env` |
 | `systemd/jardim-monitor.service` | A unidade que roda a verificação |
-| `systemd/jardim-monitor.timer` | O intervalo: a cada minuto |
+| `systemd/jardim-monitor.timer` | O intervalo: a cada minuto, com 3 minutos de carência no boot |
+| `systemd/jardim-monitor-falhou.service` | Chamada pelo `OnFailure=` da unidade acima |
 
 ## O que é vigiado
 
@@ -38,6 +40,41 @@ está em `docs/operacao/MONITORAMENTO.md`. Aqui ficam a instalação e as opçõ
 3. **Aviso de volta**, com quanto tempo ficou fora.
 4. **Histerese no disco**: sobe o alarme em 85% e só considera resolvido abaixo
    de 80%, para o disco parado na fronteira não avisar o dia inteiro.
+5. **Uma mensagem por rodada.** Numa queda de verdade cai tudo junto (o banco
+   leva auth, rest, storage e realtime embora), e enviadas uma a uma o Telegram
+   passa a responder 429 lá pela vigésima mensagem do minuto — os avisos
+   seguintes simplesmente não chegavam.
+6. **Só marca como avisado depois de o Telegram aceitar.** Antes, o estado era
+   gravado antes do envio: aviso recusado, e a queda sumia do canal até o
+   lembrete seguinte, ou para sempre com `MINUTOS_LEMBRETE=0`. Hoje, envio
+   recusado não marca nada e a rodada do minuto seguinte tenta de novo.
+7. **Três minutos de carência depois do boot**, no timer e também dentro do
+   script (`CARENCIA_BOOT_SEGUNDOS`). Sem isso, um reinício às 3h20 virava
+   "CAIU" de tudo, porque o db ainda estava no `pg_isready` e o app dentro do
+   `start_period`.
+
+## Quando é o monitoramento que cai
+
+Verificação que não roda não avisa nada — e `systemctl list-timers` continua
+mostrando o timer agendado e saudável, porque ele mostra o agendamento, não o
+resultado. Duas coisas cobrem isso:
+
+- **`OnFailure=jardim-monitor-falhou.service`**: qualquer saída diferente de
+  zero (caminho errado no `ExecStart`, configuração com uma linha que o
+  `source` tenta executar, timeout, OOM) dispara o `avisar-falha.sh`, que lê o
+  token **sem executar** a configuração, manda as últimas linhas do journal
+  para o Telegram e não repete o mesmo aviso por 60 minutos.
+- **Batimento**: de `BATIMENTO_HORAS` em `BATIMENTO_HORAS` (24 por padrão) sai
+  um "monitoramento vivo" com quantas verificações a rodada fez. A partir daí,
+  **a falta da mensagem diária é em si o alarme** — antes, canal quieto tanto
+  podia ser noite tranquila quanto monitoramento morto.
+
+Para ver o aviso de falha funcionando, sem esperar um defeito de verdade:
+
+```bash
+sudo systemctl start jardim-monitor-falhou.service
+journalctl -u jardim-monitor-falhou.service -n 20 --no-pager
+```
 
 O estado fica em `/var/lib/jardim-menu/monitoramento`, um arquivo por
 verificação. Para ver o que o monitor acha que está acontecendo agora:
@@ -55,7 +92,8 @@ sudo cp /opt/jardim-menu/JardimMenu/infra/monitoramento/exemplo/monitoramento.en
 sudo chmod 600 /etc/jardim-menu/monitoramento.env
 sudo nano /etc/jardim-menu/monitoramento.env     # endereços, chaves, contêineres
 
-sudo cp /opt/jardim-menu/JardimMenu/infra/monitoramento/systemd/jardim-monitor.* \
+# jardim-monitor* pega as três unidades: a verificação, o timer e o aviso de falha.
+sudo cp /opt/jardim-menu/JardimMenu/infra/monitoramento/systemd/jardim-monitor* \
         /etc/systemd/system/
 sudo systemctl daemon-reload
 sudo systemctl enable --now jardim-monitor.timer
@@ -91,6 +129,8 @@ docker ps --format '{{.Names}}'     # para <AMBIENTE>_CONTAINERS
 | `<AMBIENTE>_CONTAINERS` | Nomes dos contêineres que precisam estar de pé |
 | `CAMINHO_SAUDE_APP` | `/api/saude` por padrão |
 | `LIMITE_DISCO`, `PONTOS_DE_MONTAGEM` | Alerta de disco |
+| `BATIMENTO_HORAS` | De quantas em quantas horas sai o "monitoramento vivo". `0` desliga |
+| `CARENCIA_BOOT_SEGUNDOS` | Quanto tempo depois do boot o script fica calado. `0` desliga |
 
 **Sem domínio ainda** (A1 dos requisitos): o endereço provisório usa
 `sslip.io`, que resolve o IP embutido no nome e aceita certificado Let's

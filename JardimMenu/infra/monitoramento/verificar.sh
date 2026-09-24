@@ -14,7 +14,11 @@
 #     (padrão 2, isto é, dois minutos), porque um pico de um minuto não é queda;
 #   - enquanto continuar fora, repete no máximo a cada MINUTOS_LEMBRETE
 #     (padrão 60), e não a cada minuto;
-#   - avisa de novo quando volta, com quanto tempo ficou fora.
+#   - avisa de novo quando volta, com quanto tempo ficou fora;
+#   - tudo o que a rodada tem a dizer sai numa mensagem só, e um item só é
+#     marcado como "já avisei" depois de o Telegram aceitar a mensagem;
+#   - de BATIMENTO_HORAS em BATIMENTO_HORAS sai um "monitoramento vivo", para
+#     que silêncio no canal queira dizer alguma coisa.
 #
 # Uso: verificar.sh [--config CAMINHO] [--uma-vez] [--estado]
 #   --uma-vez  ignora o contador e avisa já na primeira falha (para testar)
@@ -35,7 +39,9 @@ while [ $# -gt 0 ]; do
     --config) ARQUIVO_CONFIG="${2:-}"; shift 2 ;;
     --uma-vez) UMA_VEZ="sim"; shift ;;
     --estado) SO_ESTADO="sim"; shift ;;
-    -h|--help) sed -n '2,24p' "${BASH_SOURCE[0]}"; exit 0 ;;
+    # Até a última linha do cabeçalho de uso; antes ia até a 24 e imprimia de brinde o
+    # `set -euo pipefail` que vem logo abaixo.
+    -h|--help) sed -n '2,25p' "${BASH_SOURCE[0]}"; exit 0 ;;
     *) jm_erro "Opção desconhecida: $1"; exit 2 ;;
   esac
 done
@@ -57,6 +63,13 @@ CODIGOS_OK="${CODIGOS_OK:-200 204}"
 LIMITE_DISCO="${LIMITE_DISCO:-85}"
 FOLGA_DISCO="${FOLGA_DISCO:-5}"
 PONTOS_DE_MONTAGEM="${PONTOS_DE_MONTAGEM:-/}"
+# De quantas em quantas horas sai o "monitoramento vivo". Sem esse batimento,
+# canal quieto tanto pode ser "está tudo bem" quanto "o monitoramento morreu e
+# ninguém percebeu" — e foi assim que a única rede de proteção virou a frase
+# "se ficar quieto por uma semana, desconfie". 0 desliga.
+BATIMENTO_HORAS="${BATIMENTO_HORAS:-24}"
+# Carência depois que o servidor liga. Ver o bloco de carência mais abaixo.
+CARENCIA_BOOT_SEGUNDOS="${CARENCIA_BOOT_SEGUNDOS:-180}"
 
 [ "$UMA_VEZ" = "sim" ] && FALHAS_PARA_ALERTAR=1
 
@@ -73,6 +86,21 @@ if [ "$SO_ESTADO" = "sim" ]; then
   exit 0
 fi
 
+# Carência depois do boot. O jardim-monitor.timer já entrega isso pelo par
+# OnBootSec/OnUnitActiveSec, mas o comentário dele já prometeu essa carência uma vez e não
+# cumpriu (com OnCalendar junto, quem vence é o calendário, e a primeira verificação saía
+# em menos de 60 s depois do boot): o db ainda no pg_isready, o app dentro do start_period,
+# nada respondendo, e o dono acordando às 3h por causa de uma partida normal. Aqui a
+# carência é do script, então vale também para quem chamar por cron ou à mão.
+# --uma-vez é teste do operador e não espera nada.
+if [ "$UMA_VEZ" != "sim" ] && [ "$CARENCIA_BOOT_SEGUNDOS" -gt 0 ] && [ -r /proc/uptime ]; then
+  LIGADO_HA="$(awk '{print int($1)}' /proc/uptime 2>/dev/null || echo 999999)"
+  if [ "${LIGADO_HA:-999999}" -lt "$CARENCIA_BOOT_SEGUNDOS" ]; then
+    jm_log "Servidor ligado há ${LIGADO_HA}s: esperando a carência de ${CARENCIA_BOOT_SEGUNDOS}s para não acusar queda do que ainda está subindo."
+    exit 0
+  fi
+fi
+
 # Uma verificação de cada vez. Se a anterior ainda está pendurada num timeout,
 # a de agora sai calada em vez de dobrar as conexões.
 exec 9>"$DIR_TRAVA/jardim-monitor.lock"
@@ -81,6 +109,102 @@ if ! flock -n 9; then
   exit 0
 fi
 
+# ---------------------------------------------------------------- fila de avisos
+
+# Por que existe uma fila em vez de um envio por item, e por que o estado só é gravado
+# depois do envio:
+#
+# 1) Numa queda de verdade cai tudo junto — o db leva auth, rest, storage e realtime
+#    embora, cinco mensagens por ambiente. Uma a uma, o Telegram começa a responder 429
+#    por volta de 20 mensagens por minuto no mesmo grupo e os avisos seguintes não
+#    chegam.
+# 2) Cada envio gasta até 20 s de --max-time; em rajada, o TimeoutStartSec=50 da unidade
+#    matava a verificação no meio.
+# 3) O defeito grave que motivou tudo isto: o estado ("já avisei que este item caiu") era
+#    gravado ANTES do envio. Envio recusado — 429, rede fora, token errado — e o item
+#    ficava marcado como avisado sem ninguém ter sido avisado. A queda sumia até o
+#    próximo lembrete (60 min) ou para sempre, com MINUTOS_LEMBRETE=0.
+#
+# Agora as verificações enfileiram o texto junto com a marcação que aquele texto
+# autoriza, e a marcação só é aplicada quando o Telegram aceita. Se não aceitar, nada é
+# marcado e a rodada do minuto seguinte tenta de novo.
+
+# O Telegram corta a mensagem em 4096 caracteres; o limite menor deixa folga. Fica
+# ajustável pela configuração para o dia em que esse número mudar — e para dar como
+# testar a quebra em várias mensagens sem precisar derrubar meio servidor.
+LIMITE_MENSAGEM="${LIMITE_MENSAGEM:-3500}"
+FILA_TEXTO=""
+FILA_ACOES=()
+ITENS_VERIFICADOS=0
+
+enfileirar() {
+  local texto="$1" acao="${2:-}"
+  # Se juntar este aviso estourasse o limite, manda antes o que já está na fila: assim
+  # cada mensagem leva só as marcações que ela própria entrega.
+  if [ -n "$FILA_TEXTO" ] && [ $(( ${#FILA_TEXTO} + ${#texto} + 2 )) -gt "$LIMITE_MENSAGEM" ]; then
+    descarregar
+  fi
+  if [ -n "$FILA_TEXTO" ]; then
+    FILA_TEXTO="${FILA_TEXTO}"$'\n\n'"${texto}"
+  else
+    FILA_TEXTO="$texto"
+  fi
+  [ -n "$acao" ] && FILA_ACOES+=("$acao")
+  return 0
+}
+
+descarregar() {
+  [ -n "$FILA_TEXTO" ] || return 0
+  local texto="$FILA_TEXTO"
+  local acoes=()
+  [ ${#FILA_ACOES[@]} -gt 0 ] && acoes=("${FILA_ACOES[@]}")
+  FILA_TEXTO=""
+  FILA_ACOES=()
+
+  # jm_telegram devolve o status de verdade desde a correção em lib/comum.sh. A chamada
+  # dentro de `if` é de propósito: envio recusado não derruba a rodada, só deixa tudo por
+  # marcar. Quem falha alto aqui é o journal, e a unidade jardim-monitor-falhou cobre o
+  # caso em que nem o script chega a rodar.
+  local acao
+  if jm_telegram "$texto"; then
+    if [ ${#acoes[@]} -gt 0 ]; then
+      for acao in "${acoes[@]}"; do
+        aplicar_acao "$acao"
+      done
+    fi
+  else
+    jm_aviso "O Telegram não aceitou a mensagem: nada foi marcado como avisado; a próxima rodada tenta de novo."
+  fi
+  return 0
+}
+
+# As marcações que um envio bem-sucedido autoriza. Formato: tipo|id|carimbo. O id já
+# passou por jm_identificador, então não tem '|' para atrapalhar a leitura.
+aplicar_acao() {
+  local tipo id quando
+  IFS='|' read -r tipo id quando <<< "$1"
+  case "$tipo" in
+    caiu)
+      echo caido > "$DIR_ESTADO/$id.estado"
+      echo "$quando" > "$DIR_ESTADO/$id.desde"
+      echo "$quando" > "$DIR_ESTADO/$id.lembrete"
+      ;;
+    voltou)
+      echo ok > "$DIR_ESTADO/$id.estado"
+      rm -f "$DIR_ESTADO/$id.desde" "$DIR_ESTADO/$id.lembrete"
+      ;;
+    lembrete)
+      echo "$quando" > "$DIR_ESTADO/$id.lembrete"
+      ;;
+    batimento)
+      echo "$quando" > "$DIR_ESTADO/.batimento"
+      ;;
+    *)
+      jm_aviso "Marcação desconhecida, ignorada: $1"
+      ;;
+  esac
+}
+
 # ---------------------------------------------------------------- estado
 
 # Todo o controle de repetição mora aqui: esta função recebe o resultado cru de
@@ -88,6 +212,8 @@ fi
 avaliar() {
   local id rotulo resultado detalhe
   id="$(jm_identificador "$1")"; rotulo="$2"; resultado="$3"; detalhe="${4:-}"
+
+  ITENS_VERIFICADOS=$(( ITENS_VERIFICADOS + 1 ))
 
   local arq_estado="$DIR_ESTADO/$id.estado"
   local arq_falhas="$DIR_ESTADO/$id.falhas"
@@ -104,12 +230,13 @@ avaliar() {
       desde="$(cat "$arq_desde" 2>/dev/null || echo "$agora")"
       tempo="$(jm_duracao $(( agora - desde )))"
       jm_log "VOLTOU: $rotulo (ficou fora por $tempo)"
-      jm_telegram "$(printf '%s\n' \
+      # Só marca como de volta depois de a mensagem sair. Marcar antes fazia o aviso de
+      # volta perdido sumir de vez: na rodada seguinte o estado já era "ok" e ninguém
+      # nunca ficava sabendo que tinha voltado.
+      enfileirar "$(printf '%s\n' \
         "Jardim Menu — VOLTOU: ${rotulo}" \
         "Ficou fora por ${tempo}." \
-        "$detalhe")"
-      echo ok > "$arq_estado"
-      rm -f "$arq_desde" "$arq_lembrete"
+        "$detalhe")" "voltou|$id|$agora"
     fi
     return 0
   fi
@@ -119,14 +246,15 @@ avaliar() {
   jm_log "FALHA ${falhas}/${FALHAS_PARA_ALERTAR}: $rotulo — $detalhe"
 
   if [ "$estado" != "caido" ] && [ "$falhas" -ge "$FALHAS_PARA_ALERTAR" ]; then
-    echo caido > "$arq_estado"
-    echo "$agora" > "$arq_desde"
-    echo "$agora" > "$arq_lembrete"
-    jm_telegram "$(printf '%s\n' \
+    # Enquanto o envio não der certo, o item continua com estado "ok" e o contador de
+    # falhas continua subindo: a rodada seguinte entra aqui de novo e tenta outra vez. A
+    # mensagem diz quantas falhas seguidas já são, então uma tentativa que só vence no
+    # quinto minuto chega dizendo "falhou 5 vezes".
+    enfileirar "$(printf '%s\n' \
       "Jardim Menu — CAIU: ${rotulo}" \
       "${detalhe}" \
       "Falhou ${falhas} vez(es) seguidas." \
-      "O que fazer está em docs/operacao/MONITORAMENTO.md.")"
+      "O que fazer está em docs/operacao/MONITORAMENTO.md.")" "caiu|$id|$agora"
     return 0
   fi
 
@@ -136,13 +264,12 @@ avaliar() {
   if [ "$estado" = "caido" ] && [ "$MINUTOS_LEMBRETE" -gt 0 ]; then
     ultimo="$(cat "$arq_lembrete" 2>/dev/null || echo 0)"
     if [ $(( agora - ultimo )) -ge $(( MINUTOS_LEMBRETE * 60 )) ]; then
-      echo "$agora" > "$arq_lembrete"
       desde="$(cat "$arq_desde" 2>/dev/null || echo "$agora")"
       tempo="$(jm_duracao $(( agora - desde )))"
-      jm_telegram "$(printf '%s\n' \
+      enfileirar "$(printf '%s\n' \
         "Jardim Menu — AINDA FORA: ${rotulo}" \
         "Já são ${tempo}." \
-        "${detalhe}")"
+        "${detalhe}")" "lembrete|$id|$agora"
     fi
   fi
 }
@@ -259,11 +386,46 @@ verificar_disco() {
   done
 }
 
+# ---------------------------------------------------------------- batimento
+
+# "Monitoramento vivo", de BATIMENTO_HORAS em BATIMENTO_HORAS. Sem isto, canal quieto é
+# ambíguo: pode ser noite tranquila ou pode ser o monitoramento morto — e morto em
+# silêncio ele já ficou, com uma linha errada no .env derrubando o script todo minuto.
+# Com o batimento, a falta da mensagem diária é em si o alarme.
+batimento() {
+  [ "$BATIMENTO_HORAS" -gt 0 ] || return 0
+
+  local arq="$DIR_ESTADO/.batimento" ultimo agora arquivo fora=0
+  agora="$(date +%s)"
+  ultimo="$(cat "$arq" 2>/dev/null || echo 0)"
+  [ $(( agora - ultimo )) -ge $(( BATIMENTO_HORAS * 3600 )) ] || return 0
+
+  for arquivo in "$DIR_ESTADO"/*.estado; do
+    [ -f "$arquivo" ] || continue
+    # if/fi e não `&&`: com set -e, um `[ ... ] && x` como último comando do laço
+    # derrubaria a rodada na primeira verificação que estivesse de pé.
+    if [ "$(cat "$arquivo")" = "caido" ]; then
+      fora=$(( fora + 1 ))
+    fi
+  done
+
+  enfileirar "$(printf '%s\n' \
+    "Jardim Menu — monitoramento vivo." \
+    "${ITENS_VERIFICADOS} verificações nesta rodada, ${fora} item(ns) fora do ar agora." \
+    "Esta mensagem sai a cada ${BATIMENTO_HORAS}h. Se ela faltar, o monitoramento é que caiu.")" \
+    "batimento|-|$agora"
+}
+
 # ---------------------------------------------------------------- rodada
 
 for ambiente in $AMBIENTES; do
   verificar_ambiente "$ambiente"
 done
 verificar_disco
+batimento
+descarregar
 
+# Sai 0 mesmo com envio recusado: o que falhou foi o Telegram, não a verificação, e a
+# rodada do minuto seguinte tenta de novo. Sair 1 aqui faria o OnFailure da unidade
+# disparar a cada minuto contra um canal que já se sabe fora.
 exit 0

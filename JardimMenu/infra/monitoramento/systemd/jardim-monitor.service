@@ -1,9 +1,16 @@
 [Unit]
 # Verificação de saúde do Jardim Menu. Quem dispara é o timer de mesmo nome.
 Description=Verificação de saúde do Jardim Menu (app, API, contêineres e disco)
-Documentation=file:/opt/jardim-menu/infra/monitoramento/README.md
+Documentation=file:/opt/jardim-menu/JardimMenu/infra/monitoramento/README.md
 After=network-online.target docker.service
 Wants=network-online.target
+# Quem avisa quando alguma coisa cai é o próprio verificar.sh. Quando é ELE que não
+# roda — caminho errado no ExecStart (203/EXEC), .env com uma linha que o `source` tenta
+# executar (127), TimeoutStartSec estourado, OOM —, não sobra ninguém para falar: a
+# unidade fica failed em silêncio e `systemctl list-timers` continua mostrando o timer
+# agendado e saudável, porque ele mostra o agendamento e não o resultado. Este OnFailure
+# é o único aviso que sobrevive ao script não rodar.
+OnFailure=jardim-monitor-falhou.service
 
 [Service]
 Type=oneshot
