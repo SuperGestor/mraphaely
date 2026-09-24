@@ -59,6 +59,15 @@ DIR_TRAVA="${DIR_TRAVA:-/var/lock}"
 DIAS_RETENCAO_LOCAL="${DIAS_RETENCAO_LOCAL:-14}"
 DIAS_RETENCAO_REMOTO="${DIAS_RETENCAO_REMOTO:-0}"
 DIAS_ENTRE_RESUMOS="${DIAS_ENTRE_RESUMOS:-7}"
+# Piso da retenção local: quantos dumps mais novos ficam SEMPRE, por mais velhos que
+# sejam. Existe porque a retenção por idade, sozinha, esvazia a pasta numa sequência de
+# noites falhando: nenhum arquivo novo é gerado e, um dia, o último bom completa a idade
+# de corte. Disco ocupado é problema menor do que pasta de backup vazia.
+MINIMO_DUMPS_MANTIDOS="${MINIMO_DUMPS_MANTIDOS:-3}"
+# Horas que a trava pode ficar presa antes de a sobreposição virar alarme. O systemd mata
+# a rodada em TimeoutStartSec=3h, então trava presa muito além disso é processo solto
+# (rodada manual, rclone pendurado) — e enquanto ela estiver de pé, nenhum backup roda.
+HORAS_TRAVA_PRESA="${HORAS_TRAVA_PRESA:-6}"
 # auth.users e storage.objects entram com o schema na frente, e não por capricho: são as
 # contas da equipe e o registro das fotos, moram fora do public, e foram exatamente o que
 # um backup aparentemente bom deixou de fora em 23/09/2026. Contadas aqui, a restauração
@@ -69,18 +78,59 @@ RCLONE_REMOTO="${RCLONE_REMOTO:-}"
 RCLONE_CONFIG="${RCLONE_CONFIG:-/etc/jardim-menu/rclone.conf}"
 RCLONE_OPCOES="${RCLONE_OPCOES:---transfers 4 --retries 3 --low-level-retries 10}"
 
-jm_exige_comandos curl tar find date awk flock sha256sum
+jm_exige_comandos curl tar find date awk flock sha256sum gzip
+
+# Número quebrado na configuração não pode derrubar a rodada nem, pior, virar retenção
+# sem piso: corrige e diz em voz alta o que corrigiu.
+case "$MINIMO_DUMPS_MANTIDOS" in
+  ''|*[!0-9]*|0) jm_aviso "MINIMO_DUMPS_MANTIDOS='${MINIMO_DUMPS_MANTIDOS}' não serve; usando 3."; MINIMO_DUMPS_MANTIDOS=3 ;;
+esac
+case "$HORAS_TRAVA_PRESA" in
+  ''|*[!0-9]*) jm_aviso "HORAS_TRAVA_PRESA='${HORAS_TRAVA_PRESA}' não serve; usando 6."; HORAS_TRAVA_PRESA=6 ;;
+esac
 
 mkdir -p "$DIR_BACKUP" "$DIR_TRAVA"
+
+TRAVA="$DIR_TRAVA/jardim-backup.lock"
+MARCA_TRAVA="$DIR_TRAVA/jardim-backup.iniciada"
 
 # Uma rodada de cada vez. Se a de ontem ainda estiver rodando (dump grande,
 # rede ruim), a de hoje sai sem fazer nada; duas ao mesmo tempo só brigariam
 # por disco e por banda.
-exec 9>"$DIR_TRAVA/jardim-backup.lock"
+#
+# `9<>` e não `9>`: abrir com `>` TRUNCA o arquivo já na abertura, inclusive na rodada que
+# NÃO consegue a trava. O carimbo de início vive em arquivo separado justamente por isso, e
+# é ele que diz há quanto tempo a rodada anterior está presa.
+exec 9<>"$TRAVA"
 if ! flock -n 9; then
-  jm_aviso "Outro backup ainda está rodando. Saindo sem fazer nada."
+  presa_ha=0
+  if [ -r "$MARCA_TRAVA" ]; then
+    inicio_anterior="$(cat "$MARCA_TRAVA" 2>/dev/null || printf '0')"
+    case "$inicio_anterior" in ''|*[!0-9]*) inicio_anterior=0 ;; esac
+    [ "$inicio_anterior" -gt 0 ] && presa_ha=$(( $(date +%s) - inicio_anterior ))
+  fi
+
+  # Sair calado é razoável na primeira sobreposição, não quando a anterior está de pé há
+  # horas: aí o backup de hoje simplesmente não aconteceu, e com `exit 0` o systemd dava a
+  # rodada por boa e ninguém ficava sabendo. Silêncio é indistinguível de sucesso por uma
+  # semana inteira, porque o resumo de "deu certo" só sai de sete em sete dias.
+  if [ "$presa_ha" -gt $(( HORAS_TRAVA_PRESA * 3600 )) ]; then
+    jm_erro "A rodada anterior está presa há $(( presa_ha / 3600 ))h: o backup de hoje NÃO rodou."
+    jm_telegram "$(printf '%s\n' \
+      "Jardim Menu — BACKUP NÃO RODOU ($(date '+%Y-%m-%d'))" \
+      "A rodada anterior está presa há $(( presa_ha / 3600 ))h segurando ${TRAVA}." \
+      "Nenhum backup novo foi gerado hoje, e nada novo subiu para o destino externo." \
+      "" \
+      "O que fazer: no servidor, 'ps -ef | grep backup.sh' e 'journalctl -u jardim-backup -n 50'." \
+      "Mais em docs/operacao/BACKUP.md, seção 'Quando chega o aviso de falha'.")"
+    exit 1
+  fi
+
+  jm_aviso "Outro backup ainda está rodando (há $(( presa_ha / 60 ))min). Saindo sem fazer nada."
   exit 0
 fi
+# Carimbo para a próxima rodada saber desde quando esta está de pé (ver o bloco acima).
+date +%s > "$MARCA_TRAVA"
 
 DATA_HORA="$(date '+%Y-%m-%dT%H%M')"
 DATA_DIA="$(date '+%Y-%m-%d')"
@@ -176,25 +226,65 @@ dump_banco() {
 # reinstala o Supabase do zero e o restore reclama de role inexistente.
 dump_globais() {
   local ambiente="$1" destino="$2"
-  local modo container user senha host porta
+  local modo container user senha host porta parcial conteudo
   modo="$(jm_var_ambiente "$ambiente" MODO_BANCO "${MODO_BANCO:-docker}")"
   user="$(jm_var_ambiente "$ambiente" PG_USER "${PG_USER:-supabase_admin}")"
   senha="$(jm_var_ambiente "$ambiente" PG_SENHA "")"
   container="$(jm_var_ambiente "$ambiente" CONTAINER_DB "")"
   host="$(jm_var_ambiente "$ambiente" PG_HOST "127.0.0.1")"
   porta="$(jm_var_ambiente "$ambiente" PG_PORTA "5432")"
+  parcial="${destino}.parcial"
 
   jm_log "[$ambiente] pg_dumpall --globals-only"
   if [ "$SIMULAR" = "sim" ]; then return 0; fi
 
+  # Este era o único passo que não conferia o que gerava, e a conta fechava contra nós de
+  # três jeitos ao mesmo tempo: o `>` cria o arquivo antes de o pipeline rodar; o `mv` era
+  # o último comando da função e era o status DELE que virava o retorno; e a função é
+  # chamada como condição de `if`, o que desliga o `set -e` aqui dentro. Um pg_dumpall que
+  # morria (contêiner reiniciando, senha errada) deixava um .gz válido e VAZIO, de 20
+  # bytes, que ganhava sha256, subia para o destino externo e entrava no resumo como
+  # "backup em dia". No dia do desastre é este arquivo que recria anon, authenticated,
+  # service_role, supabase_storage_admin e supabase_auth_admin num Supabase reinstalado do
+  # zero — e vazio ele não recria nada.
   if [ "$modo" = "docker" ]; then
-    docker exec -i -e PGPASSWORD="$senha" "$container" \
-      pg_dumpall -U "$user" --globals-only | gzip -6 > "${destino}.parcial"
+    [ -n "$container" ] || { jm_erro "[$ambiente] falta ${ambiente^^}_CONTAINER_DB na configuração."; return 1; }
+    if ! docker exec -i -e PGPASSWORD="$senha" "$container" \
+        pg_dumpall -U "$user" --globals-only | gzip -6 > "$parcial"; then
+      rm -f "$parcial"
+      jm_erro "[$ambiente] pg_dumpall dos papéis falhou (ou o gzip não conseguiu gravar até o fim)."
+      return 1
+    fi
   else
-    PGPASSWORD="$senha" pg_dumpall -h "$host" -p "$porta" -U "$user" --globals-only \
-      | gzip -6 > "${destino}.parcial"
+    if ! PGPASSWORD="$senha" pg_dumpall -h "$host" -p "$porta" -U "$user" --globals-only \
+        | gzip -6 > "$parcial"; then
+      rm -f "$parcial"
+      jm_erro "[$ambiente] pg_dumpall dos papéis falhou (ou o gzip não conseguiu gravar até o fim)."
+      return 1
+    fi
   fi
-  mv "${destino}.parcial" "$destino"
+
+  # Abrir o arquivo é o que prova que ele presta: gzip truncado por disco cheio sai daqui
+  # com erro. É de propósito que não há `zgrep -q`/`| grep -q`: o grep -q sai no primeiro
+  # acerto, o gzip morre de SIGPIPE e, com `set -o pipefail`, o pipeline inteiro vira
+  # falha — ou seja, encontrar o papel seria registrado como não encontrar. Já tivemos
+  # esse defeito aqui; o casamento é em bash puro, como no dump do banco.
+  conteudo="$(gzip -dc "$parcial" 2>/dev/null)" || {
+    rm -f "$parcial"
+    jm_erro "[$ambiente] o arquivo de papéis saiu corrompido ou truncado: o gzip não conseguiu abrir de volta."
+    return 1
+  }
+  case "$conteudo" in
+    *"CREATE ROLE"*) ;;
+    *)
+      rm -f "$parcial"
+      jm_erro "[$ambiente] o pg_dumpall não trouxe nenhum CREATE ROLE: sem os papéis, o arquivo não serve para nada. Confira ${ambiente^^}_PG_USER e ${ambiente^^}_PG_SENHA."
+      return 1
+      ;;
+  esac
+
+  mv "$parcial" "$destino"
+  jm_log "[$ambiente] papéis guardados: $(jm_tamanho "$destino")"
 }
 
 # Fotos do Storage. Dois caminhos, porque ainda não sabemos como a frente de
@@ -282,11 +372,52 @@ enviar_para_fora() {
 # Retenção local. Mantemos DIAS_RETENCAO_LOCAL dias no servidor; o histórico
 # longo fica no destino externo (ou na regra de ciclo de vida do bucket, que é
 # o lugar mais seguro para isso).
+#
+# Com um piso, e não só pela idade. O `find -mtime +N -delete` decide olhando a data e
+# mais nada: numa sequência de noites falhando (senha rotacionada, nome de contêiner
+# mudado depois de uma republicação) nenhum arquivo novo é gerado, nada novo sobe para o
+# destino externo, e chega o dia em que o último backup BOM completa a idade de corte e é
+# apagado — pasta local vazia e cópia externa parada há duas semanas. Por isso os
+# MINIMO_DUMPS_MANTIDOS dumps mais novos ficam sempre, junto dos arquivos irmãos do mesmo
+# horário: dump sem o .contagens.tsv não tem como ser conferido na restauração, e sem o
+# .globais.sql.gz não recria os papéis.
 limpar_antigos() {
   local ambiente="$1" dir="$2"
-  jm_log "[$ambiente] apagando backups locais com mais de ${DIAS_RETENCAO_LOCAL} dias"
-  executar find "$dir" -maxdepth 1 -type f -name 'jardim-*' \
-    -mtime "+${DIAS_RETENCAO_LOCAL}" -print -delete
+  local dumps=() protegidos=() candidatos=() arquivo prefixo manter
+  local quantos=0
+
+  # Ordenados do mais novo para o mais velho pela data de modificação.
+  mapfile -t dumps < <(
+    find "$dir" -maxdepth 1 -type f -name 'jardim-*.dump' -printf '%T@\t%p\n' 2>/dev/null \
+      | sort -rn | cut -f2-
+  )
+  for arquivo in "${dumps[@]}"; do
+    [ "$quantos" -lt "$MINIMO_DUMPS_MANTIDOS" ] || break
+    protegidos+=("${arquivo%.dump}")
+    quantos=$(( quantos + 1 ))
+  done
+
+  jm_log "[$ambiente] apagando backups locais com mais de ${DIAS_RETENCAO_LOCAL} dias (os ${MINIMO_DUMPS_MANTIDOS} dumps mais novos ficam, tenham a idade que tiverem)"
+
+  mapfile -t candidatos < <(
+    find "$dir" -maxdepth 1 -type f -name 'jardim-*' -mtime "+${DIAS_RETENCAO_LOCAL}" 2>/dev/null | sort
+  )
+  for arquivo in "${candidatos[@]}"; do
+    manter="nao"
+    for prefixo in "${protegidos[@]}"; do
+      # As aspas em "$prefixo" são o que torna o prefixo literal; o `.*` é que é padrão,
+      # e é ele que segura os irmãos (.dump, .contagens.tsv, .globais.sql.gz, .sha256).
+      case "$arquivo" in
+        "$prefixo".*) manter="sim"; break ;;
+      esac
+    done
+    if [ "$manter" = "sim" ]; then
+      jm_log "[$ambiente] mantido por ser um dos ${MINIMO_DUMPS_MANTIDOS} mais novos: $(basename "$arquivo")"
+      continue
+    fi
+    jm_log "[$ambiente] apagando $(basename "$arquivo")"
+    executar rm -f -- "$arquivo" || return 1
+  done
 }
 
 # --------------------------------------------------------------- rodada
@@ -362,7 +493,16 @@ for ambiente in $AMBIENTES; do
     fi
   fi
 
-  limpar_antigos "$ambiente" "$dir_amb" || jm_aviso "[$ambiente] a limpeza dos antigos falhou."
+  # A limpeza só roda quando a rodada deu certo. Antes ela rodava fora do `if`, em toda
+  # rodada: a noite que falhava no pg_dump não gerava arquivo nenhum e, mesmo assim,
+  # apagava por idade — enquanto o envio para fora, esse sim, só acontece em rodada boa.
+  # Era a receita para a pasta esvaziar sozinha depois de duas semanas de falhas avisadas
+  # e não atendidas.
+  if [ -z "$erro_ambiente" ]; then
+    limpar_antigos "$ambiente" "$dir_amb" || jm_aviso "[$ambiente] a limpeza dos antigos falhou."
+  else
+    jm_log "[$ambiente] limpeza dos antigos pulada: a rodada falhou em ${erro_ambiente}, e não se apaga backup bom numa noite que não gerou backup novo."
+  fi
 
   if [ -n "$erro_ambiente" ]; then
     jm_erro "[$ambiente] rodada FALHOU em: $erro_ambiente"

@@ -1,17 +1,39 @@
 [Unit]
 # Backup diário do Jardim Menu (NF-011). Quem dispara é o timer de mesmo nome.
 Description=Backup diário do Jardim Menu (banco, fotos do Storage e cópia externa)
-Documentation=file:/opt/jardim-menu/infra/backup/README.md
+# Mesmo caminho do ExecStart abaixo. Antes esta linha apontava um nível acima
+# (/opt/jardim-menu/infra/...), e dois caminhos diferentes para a mesma instalação no mesmo
+# arquivo é como um deles vira o errado sem ninguém notar.
+Documentation=file:/opt/jardim-menu/JardimMenu/infra/backup/README.md
 # O backup fala com os contêineres do Supabase e com a internet: espera os dois.
 After=network-online.target docker.service
 Wants=network-online.target
 Requires=docker.service
 
+# Quem avisa quando a rodada FALHA é o backup.sh; quem avisa quando ela nem chega a rodar
+# é esta linha. Sem ela, tudo que impede o script de chegar ao bloco de avisos morria no
+# journal, que ninguém lê: ExecStart apontando para um caminho que não existe (203/EXEC),
+# config ilegível (o script morre antes, e o token do Telegram vem justamente dela),
+# TimeoutStartSec estourado com o rclone pendurado, OOM killer. O silêncio era
+# indistinguível de sucesso por uma semana, porque o resumo de "deu certo" só sai de sete
+# em sete dias — e quem nunca teve a primeira rodada boa não tem nem resumo para sentir
+# falta.
+OnFailure=jardim-backup-falhou.service
+
 [Service]
 Type=oneshot
 User=root
-# O caminho abaixo pressupõe o repositório em /opt/jardim-menu. Se você clonou
-# em outro lugar, ajuste aqui e em jardim-backup.timer não é preciso mexer.
+# O caminho abaixo pressupõe o repositório em /opt/jardim-menu, como manda o README desta
+# pasta. ATENÇÃO: o infra/scripts/preparar-servidor.sh usa outro layout — ele cria
+# /opt/jardim e clona em /opt/jardim/repo, e aí o caminho é
+# /opt/jardim/repo/JardimMenu/infra/backup/backup.sh. Os dois não podem estar certos ao
+# mesmo tempo: confira com `ls` ANTES de habilitar o timer. Caminho errado não executa
+# nada (status=203/EXEC) e, sem o OnFailure= acima, isso não aparecia em lugar nenhum.
+# Para ajustar sem editar este arquivo:
+#   sudo systemctl edit jardim-backup.service
+#   [Service]
+#   ExecStart=
+#   ExecStart=/opt/jardim/repo/JardimMenu/infra/backup/backup.sh
 ExecStart=/opt/jardim-menu/JardimMenu/infra/backup/backup.sh
 Environment=JARDIM_BACKUP_ENV=/etc/jardim-menu/backup.env
 # Dump e upload não podem atrapalhar o salão. Se o backup rodar às 5h, a casa
