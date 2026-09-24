@@ -35,9 +35,54 @@ const versaoDoApp = (() => {
   return commit ? `${version}+${commit}` : version;
 })();
 
+/**
+ * Caminhos com sessão da equipe: os mesmos do `matcher` do middleware.ts, mais o /login,
+ * que é onde a sessão nasce. Quem mudar um dos dois tem de mudar o outro.
+ */
+const CAMINHOS_COM_SESSAO = [
+  "/login",
+  "/admin",
+  "/admin/:caminho*",
+  "/equipe",
+  "/equipe/:caminho*",
+  "/api/admin/:caminho*",
+  "/api/equipe/:caminho*",
+];
+
 const nextConfig: NextConfig = {
   reactStrictMode: true,
   env: { NEXT_PUBLIC_APP_VERSION: versaoDoApp },
+  /**
+   * Cache-Control nas telas e rotas com sessão da equipe.
+   *
+   * Existe por causa do Netlify (24/09/2026). Lá o middleware vira uma Edge Function na
+   * frente de uma CDN, e o `@supabase/ssr` reescreve os cookies de sessão a cada
+   * requisição. Resposta que carrega `Set-Cookie` de sessão e cai num cache compartilhado
+   * é sessão de uma pessoa entregue a outra — a falha silenciosa mais cara que este
+   * projeto poderia ter.
+   *
+   * A restrição da plataforma que obriga isto a morar AQUI, e não no `netlify.toml`: os
+   * `[[headers]]` do netlify.toml só valem para arquivo servido do armazenamento do
+   * Netlify, e não para resposta de função, de edge function ou de SSR. Cabeçalho posto
+   * aqui entra no `routes-manifest.json` do build e vale para os dois casos — o que
+   * importa, porque o build marca /admin, /admin/* e /equipe como estáticas, e página
+   * estática é exatamente o que uma CDN guarda por padrão.
+   *
+   * Isto é a SEGUNDA tranca, não a primeira. A primeira é o `setAll` do middleware aplicar
+   * na resposta o segundo argumento que o `@supabase/ssr` passa desde a 0.10.0
+   * (Cache-Control, Expires, Pragma); o middleware de hoje recebe só o primeiro e joga o
+   * resto fora. Enquanto isso não for corrigido, quem segura é esta lista.
+   *
+   * No servidor próprio (`infra/docker-compose.yml`) nada piora: estas mesmas rotas já são
+   * `NetworkOnly` no service worker (`app/sw.ts`), e `private` só reafirma que a resposta
+   * é de um usuário só.
+   */
+  async headers() {
+    return CAMINHOS_COM_SESSAO.map((source) => ({
+      source,
+      headers: [{ key: "Cache-Control", value: "private, no-store, max-age=0, must-revalidate" }],
+    }));
+  },
   // Servidor próprio em .next/standalone, com só as dependências que o rastreamento
   // provou necessárias. É o que a imagem Docker publica (infra/, NF-012).
   output: "standalone",

@@ -1,0 +1,110 @@
+# Publicação do front do Jardim Menu no Netlify.
+#
+# Decisão do PO em 24/09/2026, que substitui o servidor próprio de 22/09: a pilha do
+# Supabase vai para o Render, em contêineres, e o front vai para o Netlify. As duas contas
+# são do Super Gestor.
+#
+# Este arquivo NÃO substitui o `infra/docker-compose.yml`. Aquele continua sendo o que roda
+# na máquina de quem desenvolve e o que a esteira usa; o Netlify entra ao lado. Por isso
+# nada aqui exige mexer no `Dockerfile` nem no `output: "standalone"`.
+#
+# ----------------------------------------------------------------------------------------
+# NENHUM SEGREDO ENTRA NESTE ARQUIVO.
+#
+# Dois motivos, e o segundo é da plataforma:
+#   1. ele é versionado;
+#   2. o Netlify NÃO deixa escolher escopo para variável declarada em netlify.toml. Toda
+#      variável de `[build.environment]` nasce com os escopos "Builds" e "Post processing",
+#      isto é, fica à mão do build. Segredo de execução (a `SUPABASE_SERVICE_ROLE_KEY`, o
+#      token do Telegram, a URL do webhook de alerta) tem de ser cadastrado no painel do
+#      Netlify com escopo **Functions**, que este arquivo não consegue expressar.
+#
+# A regra 4 do CLAUDE.md vale igual aqui: a `service_role` nunca vai sob `NEXT_PUBLIC_` e
+# nunca entra no build. O passo a passo está em `../../infra/render/NETLIFY.md`.
+# ----------------------------------------------------------------------------------------
+
+[build]
+  # Restrição da plataforma, e a razão de esta linha existir: o Netlify clona o repositório
+  # INTEIRO, mas só procura o `netlify.toml` na "base directory" (ou na "package
+  # directory"), e não adivinha nenhuma das duas. Então, ao criar o projeto, a base precisa
+  # ser apontada à mão no painel, para `JardimMenu/front`. O valor é repetido aqui para
+  # ficar versionado e para as duas pontas não divergirem em silêncio.
+  #
+  # A base é também o diretório onde o Netlify instala as dependências e roda o comando de
+  # build. É isso que faz o `next.config.ts` funcionar sem ajuste: ele lê o `package.json` e
+  # monta `resolve.modules` a partir de `process.cwd()`, e com esta base o cwd é
+  # `JardimMenu/front`, exatamente o `WORKDIR /app/front` do Dockerfile.
+  #
+  # O `back/` (D33) fica em `JardimMenu/back`, FORA desta pasta, e é isso que o
+  # `experimental.externalDir` e o `@back/*` do tsconfig alcançam por `../back`. Funciona
+  # porque o clone é do repositório inteiro: a pasta irmã está lá, mesmo estando fora da
+  # base. Não é preciso `included_files` nem cópia nenhuma — o webpack compila o `back/`
+  # para dentro dos chunks de servidor do Next, ele não viaja como arquivo solto.
+  base = "JardimMenu/front"
+
+  # `JM_COMMIT` alimenta a versão que o tablet manda no heartbeat (JM-184): o
+  # `next.config.ts` junta a versão do `package.json` com os 7 primeiros caracteres do
+  # commit, e é por ela que o admin sabe qual aparelho ficou para trás depois de uma
+  # publicação. `COMMIT_REF` é variável de leitura que o próprio Netlify preenche com o SHA
+  # do deploy; o TOML não interpola valor, então a passagem tem de ser aqui, no comando.
+  # Vazia (build local, fora do Netlify), a versão fica só a do `package.json`, sem quebrar.
+  #
+  # Não há segredo nesta linha de propósito: o `ps` mostra a linha de comando, e segredo em
+  # linha de comando é vazamento (regra 4 do CLAUDE.md).
+  command = "JM_COMMIT=$COMMIT_REF npm run build"
+
+  # Relativo à base, portanto `JardimMenu/front/.next`. O adaptador do Next para o Netlify
+  # exige o `.next` (ou o `distDir`, quando há outro; aqui não há) e falha com
+  # "publish directory does not contain expected Next.js build output" quando o caminho
+  # aponta para outro lugar — que é o erro clássico de monorepo.
+  #
+  # `output: "standalone"` NÃO atrapalha: a verificação do adaptador trata "standalone" e o
+  # valor não declarado no mesmo ramo. Por isso o `next.config.ts` mantém o standalone, que
+  # é o que a imagem Docker do `infra/` publica.
+  publish = ".next"
+
+[build.environment]
+  # Mesma linha da imagem Docker (`node:22-bookworm-slim`). Fixada para o Netlify não
+  # trocar a versão de Node por baixo numa atualização da imagem de build dele: o `sharp`
+  # (upload de foto, `back/controllers/fotos.ts`) escolhe binário por versão de Node e de
+  # libc, e essa troca apareceria como falha de upload em produção, não no build.
+  NODE_VERSION = "22"
+
+  NEXT_TELEMETRY_DISABLED = "1"
+
+  # Varredura de segredos do Netlify: ela procura, no que o build gerou, o VALOR de cada
+  # variável de ambiente do projeto, e REPROVA o build quando acha. As `NEXT_PUBLIC_` são
+  # feitas para estar no bundle (a chave anon trabalha sob RLS, NF-005), então encontrá-las
+  # lá é acerto da varredura, e não defeito nosso. Sem esta lista o build reprova sempre.
+  #
+  # NUNCA acrescente aqui `SUPABASE_SERVICE_ROLE_KEY`, `ALERT_TELEGRAM_BOT_TOKEN`,
+  # `ALERT_TELEGRAM_CHAT_ID` nem `ALERT_WEBHOOK_URL`. Essas quatro são de execução, e a
+  # varredura sobre elas é justamente a rede de segurança que interessa: se um dia uma delas
+  # aparecer no bundle, o build tem de parar alto. Silenciar a varredura inteira
+  # (`SECRETS_SCAN_ENABLED = "false"`) é o caminho errado pelo mesmo motivo.
+  SECRETS_SCAN_OMIT_KEYS = "NEXT_PUBLIC_SUPABASE_URL,NEXT_PUBLIC_SUPABASE_ANON_KEY,NEXT_PUBLIC_APP_ORIGIN,NEXT_PUBLIC_DATA_SOURCE"
+
+# ----------------------------------------------------------------------------------------
+# O que está ausente deste arquivo de propósito
+#
+# [[headers]] — não serve para o que pareceria servir. Os cabeçalhos do netlify.toml valem
+#   só para arquivo que o Netlify serve do armazenamento dele; requisição atendida por
+#   função, edge function ou página SSR não os recebe. Ou seja: não dá para proteger
+#   `/admin` nem `/api/admin` por aqui. Quem cuida do cache dessas respostas é o
+#   `headers()` do `next.config.ts`, que sai na resposta da própria função.
+#
+# [[redirects]] — o roteamento do App Router é do adaptador. Regra escrita à mão aqui
+#   passaria a valer DEPOIS do middleware (ordem diferente do Next avulso) e viraria
+#   armadilha.
+#
+# [[plugins]] — o adaptador `@netlify/plugin-nextjs` é instalado sozinho hoje. Declará-lo
+#   aqui só troca "atualiza sozinho" por "fica parado até alguém lembrar". Se um dia uma
+#   atualização do adaptador quebrar o build, aí sim ele vira dependência fixada, com a
+#   versão anotada em `infra/render/NETLIFY.md`.
+#
+# [context.*] com valores — as `NEXT_PUBLIC_` mudam por ambiente (staging aponta para o
+#   Kong de staging, produção para o de produção) e são assadas no build. Elas moram no
+#   painel do Netlify, por contexto de deploy, porque é lá que existe escopo — e escopo é o
+#   que separa build de execução. Colocar valor de ambiente aqui espalharia a configuração
+#   em dois lugares.
+# ----------------------------------------------------------------------------------------
