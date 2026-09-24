@@ -28,10 +28,13 @@ test("E2E-01/02: tablet pareado envia, o pedido entra confirmed e aparece na equ
   // Sem toque da equipe: a tela da equipe mostra o pedido, com o código do PDV de cada item.
   //
   // O prazo largo aqui é de propósito, e vale só para ESTE pedido: ele é o primeiro evento
-  // de Realtime depois que a pilha subiu, e o servidor ainda está montando a assinatura do
-  // WAL. Numa máquina fria isso passa dos 5 s, e a tela cai na releitura de segurança de
-  // 10 s — comportamento correto, que o NF-003 prevê, mas que não mede o Realtime. Quem
-  // guarda os 2 s do requisito é o segundo pedido, logo abaixo, e o E2E-06.
+  // de Realtime depois que a pilha subiu. O servidor aceita a assinatura antes de a réplica
+  // do WAL estar pronta, e engole os eventos dessa janela — foi assim que este cenário
+  // achou, na esteira, um defeito de produto: a tela mostrava "Nenhum pedido novo" com o
+  // pedido gravado. Quem cobre esse buraco é a releitura de segurança da tela, hoje de 15 s
+  // (era 60 s). O prazo aqui precisa caber essa releitura, e não mede o Realtime.
+  //
+  // Quem mede o Realtime é o SEGUNDO pedido, logo abaixo, com o canal já morno, e o E2E-06.
   const recente = equipe.locator("article").filter({ hasText: `Pedido nº ${primeiro}` }).first();
   await expect(recente).toBeVisible({ timeout: 20_000 });
   await expect(recente).toContainText("PDV-1301");
@@ -45,7 +48,7 @@ test("E2E-01/02: tablet pareado envia, o pedido entra confirmed e aparece na equ
   // Agora sim, com o Realtime já morno: o pedido aparece na tela da equipe dentro dos 2 s
   // do NF-003, sem ninguém tocar em nada. Os 3 s de folga são para a rede da máquina que
   // estiver rodando, não para o produto. Se este prazo estourar, o Realtime não está
-  // entregando e a tela está vivendo da releitura de 10 s: é defeito, não lentidão.
+  // entregando e a tela está vivendo da releitura de segurança: é defeito, não lentidão.
   await expect(equipe.locator("article").filter({ hasText: `Pedido nº ${segundo}` }).first())
     .toBeVisible({ timeout: 5_000 });
 

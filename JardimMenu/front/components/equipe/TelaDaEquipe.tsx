@@ -27,12 +27,26 @@ import { useSom } from "./useSom";
  * - O retrato do salão vem inteiro de `staff_floor`. O Realtime (só aqui, nunca no tablet)
  *   avisa que algo mudou, e a tela relê o retrato: o evento não carrega dado, então a RLS
  *   de leitura e a function continuam sendo o único filtro.
- * - Sem Realtime de pé, a releitura de segurança fica a cada 10 s; com ele, a cada 60 s,
+ * - Sem Realtime de pé, a releitura de segurança fica a cada 10 s; com ele, a cada 15 s,
  *   que também atualiza o que não é publicado (o último contato do tablet).
  * - Pedido novo, chamado e pedido de cancelamento tocam som, depois de "Ativar som".
  */
 
-const RELEITURA_COM_REALTIME_MS = 60_000;
+/**
+ * Releitura de segurança com o Realtime de pé. Era 60 s, e virou 15 s em 23/09/2026.
+ *
+ * O motivo: "ao vivo" quer dizer que o canal foi aceito, e NÃO que todo evento vai chegar.
+ * Na esteira, o servidor de Realtime recém-subido aceitou a assinatura e engoliu o evento
+ * do primeiro pedido — a tela ficou com "Nenhum pedido novo" e a mesa como livre, com o
+ * pedido já gravado no banco. Isso acontece justamente depois de uma publicação, que é
+ * quando a pilha reinicia e a tela da equipe costuma estar aberta no salão.
+ *
+ * Com 60 s, um evento perdido escondia um pedido por um minuto inteiro, e o requisito da
+ * tela é 2 s (NF-003). Com 15 s, o caminho normal continua sendo o Realtime, em menos de
+ * 2 s, e o pior caso passa a ser 15 s. O custo é quatro leituras por minuto em vez de uma,
+ * em meia dúzia de aparelhos da casa: barato perto de um pedido que ninguém viu.
+ */
+const RELEITURA_COM_REALTIME_MS = 15_000;
 const RELEITURA_SEM_REALTIME_MS = 10_000;
 /** "Pedidos recentes": o que a equipe ainda pode estar lançando no PDV. */
 const RECENTES_MIN = 20;
