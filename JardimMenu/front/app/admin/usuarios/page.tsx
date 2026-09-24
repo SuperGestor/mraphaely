@@ -140,13 +140,15 @@ export default function AdminUsuarios() {
       }
       const caso = casoDoVinculo(usuarios, alvo);
       if (caso.tipo === "ja_ativa") {
-        // Nada a oferecer: a function responderia JM409. A tela evita o toque perdido e
-        // manda o dono ao lugar certo de mudar papel.
+        // A lista pode estar velha: outro dono, ou outra aba, pode ter desativado a pessoa
+        // depois da última leitura. Por isso a tela DIZ o que sabe e mesmo assim oferece o
+        // caminho — quem decide é a function, que lê o estado de agora. Fechar aqui deixaria
+        // o dono sem saída, olhando uma lista que não bate com o banco.
         setAviso(
-          `${alvo} já está na lista aqui embaixo, como ${nomeDoPapel(caso.papel)}, com acesso a ${loja.nome}. ` +
-            "Para mudar o papel, use a própria lista.",
+          `Pela lista aqui embaixo, ${alvo} já está ativa em ${loja.nome}, como ${nomeDoPapel(caso.papel)}. ` +
+            "Se for só isso, mude o papel pela própria lista. Se a lista estiver desatualizada, pode seguir: " +
+            "quem confere é o servidor.",
         );
-        return;
       }
       // A oferta explica o caso; repetir a mensagem do servidor aqui em cima só duplicaria.
       setVinculo({ email: alvo, papel, caso });

@@ -65,6 +65,7 @@ export default function AdminPainel() {
         // número digitado e não gravado não pode parecer valer.
         setRegua(String(porcentagemDaRegua(lido.rules)));
         setProblemaDaRegua(null);
+        setAvisoDaRegua(null);
       })
       .catch((e: unknown) => setErro(mensagemDe(e)))
       .finally(() => setCarregando(false));
@@ -91,7 +92,11 @@ export default function AdminPainel() {
       setAvisoDaRegua(`Régua gravada em ${leitura.pct}%. Ela vale para todos os turnos que você abrir aqui.`);
       carregar();
     } catch (e: unknown) {
-      setAvisoDaRegua(mensagemDe(e));
+      // Pelo canal de PROBLEMA, e não pelo de aviso: o dono precisa ver que não gravou, e o
+      // campo volta ao que está valendo, para o número recusado não ficar em pé como se
+      // fosse a régua da casa.
+      setProblemaDaRegua(mensagemDe(e));
+      if (painel) setRegua(String(porcentagemDaRegua(painel.rules)));
     } finally {
       setGravandoRegua(false);
     }
@@ -193,7 +198,7 @@ export default function AdminPainel() {
             </Panel>
           ) : (
             <>
-              <Destaques linhas={painel.deserve_highlight} />
+              <Destaques linhas={painel.deserve_highlight} semMovimento={painel.totals.impressions === 0} />
 
               <ReguaDaCasa
                 painel={painel}
@@ -258,7 +263,7 @@ function Total({ rotulo, valor }: { rotulo: string; valor: number }) {
  * entre uma mesa e outra: o que ela precisa entregar é a frase ("pedido 5 vezes em apenas
  * 6 aparições"), e não oito colunas de número para o dono comparar de cabeça.
  */
-function Destaques({ linhas }: { linhas: LinhaDoPainel[] }) {
+function Destaques({ linhas, semMovimento }: { linhas: LinhaDoPainel[]; semMovimento: boolean }) {
   const algumSemRegistro = linhas.some((l) => l.impressions === 0);
 
   return (
@@ -268,8 +273,9 @@ function Destaques({ linhas }: { linhas: LinhaDoPainel[] }) {
     >
       {linhas.length === 0 ? (
         <p className="text-base">
-          Nenhum produto está vendendo escondido neste turno: o que a casa vende está aparecendo na tela. Isso é boa
-          notícia, e não falta de dado.
+          {semMovimento
+            ? "Ainda não chegou registro de nenhuma aparição neste turno. Quando o movimento começar, quem estiver vendendo sem aparecer na tela cai aqui."
+            : "Nenhum produto está vendendo escondido neste turno: o que a casa vende está aparecendo na tela. Isso é boa notícia, e não falta de dado."}
         </p>
       ) : (
         <>
@@ -282,7 +288,9 @@ function Destaques({ linhas }: { linhas: LinhaDoPainel[] }) {
                   <p className="text-muted mt-0.5 text-sm">{l.category}</p>
                   <p className="mt-3 text-base">{frase}</p>
                   <p className="text-muted mt-2 text-sm">
-                    Considere subir no cardápio: um lugar mais alto na categoria, ou marcado como destaque.
+                    {l.in_menu
+                      ? "Considere subir no cardápio: um lugar mais alto na categoria, ou marcado como destaque."
+                      : "Este produto está fora do cardápio e mesmo assim vendeu. Vale conferir se saiu de lá sem querer."}
                   </p>
                   <div className="mt-3 flex flex-wrap gap-2">
                     {l.in_menu ? null : <Badge tom="alerta">fora do cardápio</Badge>}
