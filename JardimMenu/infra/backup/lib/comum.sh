@@ -16,8 +16,14 @@ jm_agora() {
   date '+%Y-%m-%d %H:%M:%S %z'
 }
 
+# stderr, junto do aviso e do erro. Registro não é dado: enquanto o registro saía no
+# stdout, qualquer função que devolvesse valor por stdout entregava o registro grudado no
+# valor. Foi o que quebrou o `restaurar.sh --do-remoto`: o caminho do arquivo baixado
+# voltava com a linha "Baixando ... do destino externo" na frente, e o pg_restore procurava
+# um arquivo com esse nome. Quem captura tudo não perde nada: o backup.sh manda stdout e
+# stderr para o mesmo tee.
 jm_log() {
-  printf '[%s] %s\n' "$(jm_agora)" "$*"
+  printf '[%s] %s\n' "$(jm_agora)" "$*" >&2
 }
 
 jm_aviso() {

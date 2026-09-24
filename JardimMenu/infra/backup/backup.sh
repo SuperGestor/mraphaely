@@ -219,8 +219,12 @@ dump_storage() {
     docker exec -i "$container" tar -C "$caminho" -cf - . | gzip -6 > "${destino}.parcial" \
       || { rm -f "${destino}.parcial"; return 1; }
   else
-    jm_aviso "[$ambiente] Storage não configurado (${ambiente^^}_DIR_STORAGE ou ${ambiente^^}_CONTAINER_STORAGE). As fotos NÃO entraram neste backup."
-    return 0
+    # Falha, e não aviso. Foto perdida é trabalho do gestor perdido, e ela não está dentro
+    # do dump do banco: uma rodada sem as fotos não é um backup completo, e declarar sucesso
+    # faz a casa acreditar que está protegida. Quem quiser mesmo só o banco tem
+    # --somente-banco, que é explícito e não passa por aqui.
+    jm_erro "[$ambiente] Storage não configurado (${ambiente^^}_DIR_STORAGE ou ${ambiente^^}_CONTAINER_STORAGE). As fotos NÃO entraram neste backup."
+    return 1
   fi
 
   mv "${destino}.parcial" "$destino"

@@ -28,10 +28,14 @@ services:
       - caddy-config:/config
     environment:
       ACME_EMAIL: ${ACME_EMAIL:?defina ACME_EMAIL no proxy.env}
-      HOST_APP_STAGING: ${HOST_APP_STAGING:-}
-      HOST_API_STAGING: ${HOST_API_STAGING:-}
-      HOST_APP_PRODUCAO: ${HOST_APP_PRODUCAO:-}
-      HOST_API_PRODUCAO: ${HOST_API_PRODUCAO:-}
+      # O padrão fica AQUI, e não no Caddyfile. O `{$VAR:padrão}` do Caddy só vale quando a
+      # variável está AUSENTE; vazia, ele usa o vazio, e endereço de site vazio não é
+      # Caddyfile válido: o proxy inteiro não sobe, levando junto os dois ambientes. O `:-`
+      # do compose trata vazio como ausente, que é o comportamento que se quer aqui.
+      HOST_APP_STAGING: ${HOST_APP_STAGING:-app-staging.localhost}
+      HOST_API_STAGING: ${HOST_API_STAGING:-api-staging.localhost}
+      HOST_APP_PRODUCAO: ${HOST_APP_PRODUCAO:-app-producao.localhost}
+      HOST_API_PRODUCAO: ${HOST_API_PRODUCAO:-api-producao.localhost}
       HSTS_MAX_AGE: ${HSTS_MAX_AGE:-86400}
     healthcheck:
       # A API de administração do Caddy, que só escuta em 127.0.0.1 dentro do contêiner.

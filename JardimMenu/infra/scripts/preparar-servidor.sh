@@ -313,7 +313,16 @@ else
     aviso "NÃO vou desligar a senha do SSH: isso trancaria você do lado de fora."
     aviso "rode de novo com --chave-ssh <arquivo .pub> quando tiver a chave."
   else
-    ARQUIVO_SSHD=/etc/ssh/sshd_config.d/60-jardim.conf
+    # 01-, e não 60-. O sshd usa o PRIMEIRO valor obtido de cada palavra-chave, e o
+    # Include dos drop-ins é expandido em ordem alfabética. Imagem de VPS feita com
+    # cloud-init — justamente a que chega com senha por e-mail — já traz um
+    # 50-cloud-init.conf com `PasswordAuthentication yes`, que vencia o nosso 60-. O
+    # arquivo era escrito, o sshd -t passava, a tela dizia "senha desligada" e a senha
+    # continuava aceita na internet.
+    ARQUIVO_SSHD=/etc/ssh/sshd_config.d/01-jardim.conf
+    # Herança: em servidor já preparado pela versão antiga, o 60- fica para trás e pode
+    # confundir quem for auditar depois.
+    rm -f /etc/ssh/sshd_config.d/60-jardim.conf
     if ! grep -qE '^[[:space:]]*Include[[:space:]]+/etc/ssh/sshd_config\.d/\*\.conf' /etc/ssh/sshd_config; then
       # Ubuntu 22.04 e 24.04 já trazem esse Include na primeira linha; outro sistema pode
       # não ter, e aí o arquivo abaixo seria escrito e ignorado em silêncio.
@@ -336,7 +345,18 @@ CONF
     # aqui derruba o sshd e o servidor vira um tijolo com IP.
     if sshd -t; then
       systemctl reload ssh 2>/dev/null || systemctl reload sshd 2>/dev/null || true
-      feito "SSH só por chave (senha desligada, root só por chave)"
+      # sshd -t só valida SINTAXE. Quem diz o valor que vai valer é `sshd -T`, que resolve
+      # todos os drop-ins na ordem real. Sem esta conferência o script anunciava um
+      # controle de segurança que podia não estar em vigor.
+      EFETIVO="$(sshd -T 2>/dev/null | grep -iE '^passwordauthentication' | awk '{print $2}')"
+      if [ "$EFETIVO" = "no" ]; then
+        feito "SSH só por chave (senha desligada, root só por chave)"
+      else
+        aviso "a senha do SSH CONTINUA ligada (sshd -T diz passwordauthentication=$EFETIVO)."
+        aviso "algum arquivo de /etc/ssh/sshd_config.d/ vence o nosso. Os candidatos:"
+        grep -ril 'passwordauthentication' /etc/ssh/sshd_config.d/ 2>/dev/null | sed 's/^/        /' || true
+        morrer "corrija isso antes de pôr o servidor na internet: a pilha inteira está atrás deste login."
+      fi
       aviso "ANTES de fechar esta sessão, abra outra por chave e confirme que entra."
     else
       rm -f "$ARQUIVO_SSHD"
