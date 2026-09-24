@@ -100,3 +100,101 @@ jobs:
 
       - name: Testes de banco (pgTAP)
         run: supabase test db --local --workdir JardimMenu/back
+  ponta-a-ponta:
+    name: Navegador e API (E2E, ponta a ponta e segurança no servidor)
+    runs-on: ubuntu-latest
+    # A máquina de quem desenvolve não dá conta desta série: nela um cenário de 90 s de
+    # limite chegou a aparecer no relatório com 50 min, sempre num teste diferente, por
+    # disputa de disco e de sincronização de nuvem. Em máquina limpa a mesma série leva
+    # minutos. Foi por isso que o E2E saiu de "a combinar" e entrou aqui (23/09/2026).
+    env:
+      NEXT_TELEMETRY_DISABLED: "1"
+    steps:
+      - uses: actions/checkout@v7
+
+      - uses: actions/setup-node@v7
+        with:
+          node-version: "22"
+          cache: npm
+          cache-dependency-path: JardimMenu/front/package-lock.json
+
+      - uses: supabase/setup-cli@v3
+        with:
+          version: 2.117.0
+
+      - name: Subir o Supabase local inteiro
+        # `start`, e não `db start`: o E2E faz login da equipe (GoTrue), assina o Realtime
+        # e envia foto (Storage). Só o banco não basta.
+        run: supabase start --workdir JardimMenu/back
+
+      - name: Ler os endereços e as chaves do Supabase local
+        # Chaves de instância efêmera, criadas agora e descartadas com o runner. A
+        # service_role entra como variável de EXECUÇÃO, nunca sob NEXT_PUBLIC_ (regra 4 do
+        # CLAUDE.md): quem precisa dela é o convite de usuário (JM-060) na prova ponta a
+        # ponta. O passo de segurança logo abaixo confere que ela não foi para o bundle.
+        run: |
+          STATUS="$(supabase status --workdir JardimMenu/back -o json)"
+          {
+            echo "NEXT_PUBLIC_SUPABASE_URL=$(echo "$STATUS" | jq -r .API_URL)"
+            echo "NEXT_PUBLIC_SUPABASE_ANON_KEY=$(echo "$STATUS" | jq -r .ANON_KEY)"
+            echo "SUPABASE_SERVICE_ROLE_KEY=$(echo "$STATUS" | jq -r .SERVICE_ROLE_KEY)"
+            echo "MAILPIT_URL=$(echo "$STATUS" | jq -r .MAILPIT_URL)"
+            echo "NEXT_PUBLIC_DATA_SOURCE=supabase"
+            echo "NEXT_PUBLIC_APP_ORIGIN=http://localhost:3000"
+          } >> "$GITHUB_ENV"
+
+      - name: Instalar as dependências travadas
+        working-directory: JardimMenu/front
+        run: npm ci
+
+      - name: Build de produção, apontando para o Supabase local
+        working-directory: JardimMenu/front
+        run: npm run build
+
+      - name: Instalar o Chrome que o Playwright usa
+        # O playwright.config.ts fixa channel "chrome", para nada ser baixado na máquina de
+        # quem desenvolve. No runner o Chrome não vem instalado, então ele entra aqui.
+        working-directory: JardimMenu/front
+        run: npx playwright install chrome --with-deps
+
+      - name: E2E no navegador (§9.2)
+        working-directory: JardimMenu/front
+        run: npx playwright test
+
+      - name: Banco limpo antes da prova ponta a ponta
+        # Ela grava dados e exige massa limpa; está escrito no cabeçalho do próprio script.
+        run: supabase db reset --workdir JardimMenu/back
+
+      - name: Subir o servidor de produção para as duas provas seguintes
+        working-directory: JardimMenu/front
+        # O mesmo server.js que a imagem Docker publica, e não `next start`, que o Next
+        # avisa não funcionar com output standalone.
+        run: |
+          # nohup e setsid: o passo termina, e sem isso o servidor levaria SIGHUP junto e os
+          # dois passos seguintes bateriam num endereço morto.
+          nohup npm run start:standalone > /tmp/jardim-servidor.log 2>&1 &
+          for i in $(seq 1 30); do
+            if curl -sf -o /dev/null http://127.0.0.1:3000/api/saude; then
+              echo "servidor no ar"
+              exit 0
+            fi
+            sleep 2
+          done
+          echo "o servidor nao subiu em 60 s" >&2
+          exit 1
+
+      - name: Prova ponta a ponta (API e banco de verdade)
+        working-directory: JardimMenu/front
+        run: node scripts/verificar-ponta-a-ponta.mjs --url http://127.0.0.1:3000
+
+      - name: Segurança, agora também nas rotas do servidor
+        working-directory: JardimMenu/front
+        run: node scripts/verificar-seguranca.mjs --url http://127.0.0.1:3000
+
+      - name: Guardar o rastro dos cenários que falharam
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: playwright-rastro
+          path: JardimMenu/front/test-results/
+          retention-days: 7
