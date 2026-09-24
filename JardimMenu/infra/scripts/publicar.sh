@@ -459,11 +459,20 @@ if [ "${#PENDENTES[@]}" -gt 0 ] && [ "$FAZER_MIGRACOES" = "sim" ]; then
     aviso "backup pulado por --sem-backup. Vai ficar registrado no log."
   elif [ "$AMBIENTE" = "producao" ] || [ "$FAZER_BACKUP" = "sim" ]; then
     titulo "Backup antes da migração"
-    if [ -x "$DIR_SCRIPTS/backup.sh" ] || [ -f "$DIR_SCRIPTS/backup.sh" ]; then
-      bash "$DIR_SCRIPTS/backup.sh" "$AMBIENTE" --raiz "$RAIZ" --etiqueta "antes-de-$REVISAO"
-      feito "backup guardado em $RAIZ/backups/$AMBIENTE"
+    # O backup.sh mora em infra/backup/, e não ao lado deste script. Ele se configura por
+    # /etc/jardim-menu/backup.env (ou JARDIM_BACKUP_ENV) e recebe o ambiente por --ambiente:
+    # não existem --raiz nem --etiqueta. Com o caminho e a interface errados, produção com
+    # migração pendente batia no `morrer` abaixo e NUNCA conseguia migrar.
+    #
+    # --somente-banco de propósito: o que a migração pode estragar é o banco, e as fotos
+    # ficam para a rodada noturna. `|| morrer` porque backup que falhou não é backup.
+    BACKUP="$DIR_INFRA/backup/backup.sh"
+    if [ -f "$BACKUP" ]; then
+      bash "$BACKUP" --ambiente "$AMBIENTE" --somente-banco \
+        || morrer "o backup falhou, e produção não migra sem backup (NF-011)."
+      feito "backup do banco guardado antes de migrar"
     else
-      morrer "não achei o backup.sh, e produção não migra sem backup (NF-011)."
+      morrer "não achei $BACKUP, e produção não migra sem backup (NF-011)."
     fi
   fi
 fi

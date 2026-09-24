@@ -26,6 +26,7 @@ services:
   # ---------------------------------------------------------------------------
   db:
     image: public.ecr.aws/supabase/postgres:${VERSAO_POSTGRES:-17.6.1.167}
+    container_name: ${PROJETO:-jardim}-db
     restart: unless-stopped
     networks: [interna]
     volumes:
@@ -64,6 +65,7 @@ services:
   # ---------------------------------------------------------------------------
   auth:
     image: public.ecr.aws/supabase/gotrue:${VERSAO_GOTRUE:-v2.196.0}
+    container_name: ${PROJETO:-jardim}-auth
     restart: unless-stopped
     networks: [interna]
     depends_on:
@@ -117,6 +119,7 @@ services:
   # ---------------------------------------------------------------------------
   rest:
     image: public.ecr.aws/supabase/postgrest:${VERSAO_POSTGREST:-v16.2}
+    container_name: ${PROJETO:-jardim}-rest
     restart: unless-stopped
     networks: [interna]
     depends_on:
@@ -191,6 +194,7 @@ services:
   # ---------------------------------------------------------------------------
   storage:
     image: public.ecr.aws/supabase/storage-api:${VERSAO_STORAGE:-v1.72.1}
+    container_name: ${PROJETO:-jardim}-storage
     restart: unless-stopped
     networks: [interna]
     depends_on:
@@ -229,6 +233,7 @@ services:
   # ---------------------------------------------------------------------------
   meta:
     image: public.ecr.aws/supabase/postgres-meta:${VERSAO_META:-v0.99.0}
+    container_name: ${PROJETO:-jardim}-meta
     restart: unless-stopped
     networks: [interna]
     depends_on:
@@ -252,6 +257,7 @@ services:
   # ---------------------------------------------------------------------------
   kong:
     image: kong:${VERSAO_KONG:-2.8.1}
+    container_name: ${PROJETO:-jardim}-kong
     restart: unless-stopped
     entrypoint: bash -c 'eval "echo \"$$(cat ~/temp.yml)\"" > ~/kong.yml && /docker-entrypoint.sh kong docker-start'
     depends_on:
@@ -291,6 +297,7 @@ services:
   # ---------------------------------------------------------------------------
   app:
     image: ${IMAGEM_APP:-jardim-menu-app}:${TAG_APP:-local}
+    container_name: ${PROJETO:-jardim}-app
     build:
       context: ../front
       dockerfile: Dockerfile

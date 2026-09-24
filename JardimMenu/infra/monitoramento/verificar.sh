@@ -50,7 +50,10 @@ FALHAS_PARA_ALERTAR="${FALHAS_PARA_ALERTAR:-2}"
 MINUTOS_LEMBRETE="${MINUTOS_LEMBRETE:-60}"
 CAMINHO_SAUDE_APP="${CAMINHO_SAUDE_APP:-/api/saude}"
 CAMINHO_SAUDE_API="${CAMINHO_SAUDE_API:-/auth/v1/health}"
-CODIGOS_OK="${CODIGOS_OK:-200}"
+# 200 e 204: o /api/saude do app responde 204 (sem corpo, de propósito — ele não toca no
+# banco). Com só 200 na lista, o monitoramento alertaria queda do primeiro minuto em diante,
+# com o app perfeitamente de pé.
+CODIGOS_OK="${CODIGOS_OK:-200 204}"
 LIMITE_DISCO="${LIMITE_DISCO:-85}"
 FOLGA_DISCO="${FOLGA_DISCO:-5}"
 PONTOS_DE_MONTAGEM="${PONTOS_DE_MONTAGEM:-/}"
@@ -236,8 +239,12 @@ verificar_disco() {
       jm_aviso "Ponto de montagem inexistente: $ponto"
       continue
     fi
-    usado="$(df -P "$ponto" | awk 'NR==2 {gsub(/%/,"",$5); print $5}')"
-    livre="$(df -Ph "$ponto" | awk 'NR==2 {print $4" livres de "$2}')"
+    # Campos contados da DIREITA. Com -P a saída é uma linha só, e a última coluna é o
+    # ponto de montagem: capacidade é NF-1 e disponível é NF-2. Contar da esquerda quebra
+    # quando o nome do dispositivo tem espaço — no Git Bash do Windows ele é
+    # "C:/Program Files/Git", e a leitura devolvia 71068692% de uso.
+    usado="$(df -P "$ponto" | awk 'NR==2 {gsub(/%/,"",$(NF-1)); print $(NF-1)}')"
+    livre="$(df -Ph "$ponto" | awk 'NR==2 {print $(NF-2)" livres de "$(NF-4)}')"
     id="disco-$(jm_identificador "$ponto")"
 
     # Histerese: sobe o alarme em LIMITE_DISCO e só desce em LIMITE - FOLGA.
