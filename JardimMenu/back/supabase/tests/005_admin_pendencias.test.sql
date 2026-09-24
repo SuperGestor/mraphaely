@@ -15,7 +15,7 @@ begin;
 
 create extension if not exists pgtap with schema extensions;
 
-select plan(67);
+select plan(86);
 
 -- ---------- apoio ----------
 create function pg_temp.h(t text) returns text language sql immutable
@@ -255,12 +255,20 @@ select is((select (j -> 'rules' ->> 'median_impressions')::numeric from res wher
 select is((select (j -> 'rules' ->> 'low_view_max')::numeric from res where k = 'hoje'), 1::numeric,
   'e o limite do pouco visto é um quarto dela');
 
-select is((select jsonb_array_length(j -> 'never_seen') from res where k = 'hoje'), 2,
-  'dois produtos passaram o turno sem uma impressão');
+-- Um só, e não dois: 'Pedido sem pixel' tem venda e mudou de lista. Produto que vende não
+-- pode aparecer na lista que o dono olha para decidir o que TIRAR do cardápio (PO, 24/09).
+select is((select jsonb_array_length(j -> 'never_seen') from res where k = 'hoje'), 1,
+  'só o produto sem impressão E sem venda fica em nunca vistos');
 select is((select (pg_temp.linha(j, 'never_seen', 'Nunca visto') ->> 'impressions')::int from res where k = 'hoje'), 0,
   'produto sem impressão no turno aparece como nunca visto, mesmo com impressão de ontem');
-select is((select (pg_temp.linha(j, 'never_seen', 'Pedido sem pixel') ->> 'orders')::int from res where k = 'hoje'), 1,
-  'e o pedido sem evento de pixel aparece ali com o pedido à vista (o pixel pode perder evento)');
+select is((select jsonb_array_length(j -> 'deserve_highlight') from res where k = 'hoje'), 1,
+  'um produto vendeu aparecendo pouco, e virou candidato a subir no cardápio');
+select is((select (pg_temp.linha(j, 'deserve_highlight', 'Pedido sem pixel') ->> 'orders')::int from res where k = 'hoje'), 1,
+  'e é o que foi pedido sem registro de impressão (o pixel perde evento sem rede)');
+select is((select (pg_temp.linha(j, 'deserve_highlight', 'Pedido sem pixel') ->> 'impressions')::int from res where k = 'hoje'), 0,
+  'com as aparições à vista, que é o número que sustenta a leitura da tela');
+select ok((select pg_temp.linha(j, 'never_seen', 'Pedido sem pixel') is null from res where k = 'hoje'),
+  'e ele não fica nas duas listas ao mesmo tempo');
 
 select is((select jsonb_array_length(j -> 'champions') from res where k = 'hoje'), 1,
   'um único produto passa o piso de impressões e tem pedido');
@@ -307,13 +315,59 @@ select is((select (j -> 'totals' ->> 'orders')::int from res where k = 'ontem'),
   'o turno de ontem tem só o pedido de ontem');
 select is((select (j -> 'totals' ->> 'impressions')::int from res where k = 'ontem'), 1,
   'e só a impressão de ontem: as 21 de hoje ficam no turno de hoje (D12)');
-select is((select (pg_temp.linha(j, 'never_seen', 'Pedido de ontem') ->> 'orders')::int from res where k = 'ontem'), 1,
-  'o pedido de ontem conta no turno em que foi feito');
+select is((select (pg_temp.linha(j, 'deserve_highlight', 'Pedido de ontem') ->> 'orders')::int from res where k = 'ontem'), 1,
+  'o pedido de ontem conta no turno em que foi feito, e ali ele também é destaque');
 select is((select (pg_temp.linha(j, 'seen_no_conversion', 'Nunca visto') ->> 'impressions')::int from res where k = 'ontem'), 1,
   'e a impressão de ontem conta no turno de ontem, pela shift_date e não pelo relógio de quem chama');
 
 select throws_ok($$ select admin_menu_panel('00000000-0000-4000-8000-0000000005a1', (select d from dias where k = 'amanha')) $$,
   'JM422', null, 'turno no futuro é recusado');
+
+
+-- ============================================================
+-- 2.1 A régua do painel é de cada casa (decisão do PO em 24/09/2026)
+-- ============================================================
+-- Antes era constante de 25%. 'Vai variar de acordo com o perfil do tamanho da casa': quem
+-- escolhe passa a ser o dono, como um alerta que ele calibra.
+
+set local role authenticated;
+set local request.jwt.claims = '{"sub":"00000000-0000-4000-8000-000000000501","role":"authenticated"}';
+select lives_ok($$ select admin_update_store_menu_panel_rule('00000000-0000-4000-8000-0000000005a1', 50) $$,
+  'o dono calibra a régua do painel');
+reset role;
+select is((select menu_panel_low_view_pct from stores where id = '00000000-0000-4000-8000-0000000005a1'), 50,
+  'e o valor fica gravado na loja');
+set local role authenticated;
+
+-- Com 50% da mediana (4), o piso sai de 1 para 2, e o produto de duas impressões que antes
+-- passava batido entra na lista. É a prova de que a régua muda o que o dono vê.
+insert into res select 'meio', admin_menu_panel('00000000-0000-4000-8000-0000000005a1');
+select is((select (j -> 'rules' ->> 'low_view_fraction')::numeric from res where k = 'meio'), 0.5::numeric,
+  'o painel passa a usar a fração da loja, e a devolve para a tela explicar a lista');
+select is((select (j -> 'rules' ->> 'low_view_max')::numeric from res where k = 'meio'), 2::numeric,
+  'e o piso de pouco visto acompanha: metade da mediana de 4');
+
+set local request.jwt.claims = '{"sub":"00000000-0000-4000-8000-000000000502","role":"authenticated"}';
+select lives_ok($$ select admin_update_store_menu_panel_rule('00000000-0000-4000-8000-0000000005a1', 25) $$,
+  'o gestor também calibra');
+
+select throws_ok($$ select admin_update_store_menu_panel_rule('00000000-0000-4000-8000-0000000005a1', 0) $$,
+  'JM422', null, 'zero é recusado: desligaria a lista sem dizer');
+select throws_ok($$ select admin_update_store_menu_panel_rule('00000000-0000-4000-8000-0000000005a1', 101) $$,
+  'JM422', null, 'acima de 100 é recusado: não quer dizer nada');
+select throws_ok($$ select admin_update_store_menu_panel_rule('00000000-0000-4000-8000-0000000005a1', null) $$,
+  'JM422', null, 'nulo é recusado');
+reset role;
+select is((select menu_panel_low_view_pct from stores where id = '00000000-0000-4000-8000-0000000005a1'), 25,
+  'e nenhuma recusa mexeu no valor gravado');
+set local role authenticated;
+
+set local request.jwt.claims = '{"sub":"00000000-0000-4000-8000-000000000503","role":"authenticated"}';
+select throws_ok($$ select admin_update_store_menu_panel_rule('00000000-0000-4000-8000-0000000005a1', 40) $$,
+  'JM403', null, 'garçom não calibra a régua do painel');
+select throws_ok($$ select admin_update_store_menu_panel_rule('00000000-0000-4000-8000-0000000005b1', 40) $$,
+  'JM403', null, 'e ninguém calibra a régua de outra loja');
+set local request.jwt.claims = '{"sub":"00000000-0000-4000-8000-000000000501","role":"authenticated"}';
 
 -- ============================================================
 -- 3. Vínculo de conta que já existe no Auth (JM-052)
@@ -368,8 +422,26 @@ update store_users set is_active = false, deactivated_at = now()
  where store_id = '00000000-0000-4000-8000-0000000005a1'
    and user_id = '00000000-0000-4000-8000-000000000506';
 set local role authenticated;
+-- Decisão do PO em 24/09/2026: o garçom que saiu e voltou entra pelo convite, e o vínculo
+-- desativado é reativado com o papel pedido. Antes isto era JM409 e mandava o dono à lista
+-- de usuários. A trava do último dono não é contornada: reativar não remove ninguém.
+select lives_ok($$ select admin_link_existing_user('00000000-0000-4000-8000-0000000005a1', 'vinculo@ap.test', 'manager') $$,
+  'conta desativada volta pelo convite');
+reset role;
+select is((select role from store_users where store_id = '00000000-0000-4000-8000-0000000005a1'
+            and user_id = '00000000-0000-4000-8000-000000000506'), 'manager',
+  'e volta com o papel que o dono pediu agora, não com o que tinha antes');
+select is((select is_active from store_users where store_id = '00000000-0000-4000-8000-0000000005a1'
+            and user_id = '00000000-0000-4000-8000-000000000506'), true,
+  'ativa de novo');
+select is((select count(*)::int from store_users where store_id = '00000000-0000-4000-8000-0000000005a1'
+            and user_id = '00000000-0000-4000-8000-000000000506'), 1,
+  'e sem duplicar o vínculo');
+set local role authenticated;
+-- Já ativa continua sendo conflito: trocar papel por aqui seria um segundo caminho para
+-- isso, fora da tela de usuários, que é onde mora a trava do último dono.
 select throws_ok($$ select admin_link_existing_user('00000000-0000-4000-8000-0000000005a1', 'vinculo@ap.test', 'waiter') $$,
-  'JM409', null, 'conta desativada na loja não volta pelo vínculo');
+  'JM409', null, 'conta já ATIVA na loja segue em conflito');
 
 -- ============================================================
 -- 4. Privilégio nominal: anon não executa nenhuma das três (NF-005, regra 2)
@@ -385,6 +457,8 @@ select throws_ok($$ select admin_menu_panel('00000000-0000-4000-8000-0000000005a
   '42501', null, 'anon não abre o painel do cardápio');
 select throws_ok($$ select admin_link_existing_user('00000000-0000-4000-8000-0000000005a1', 'vinculo@ap.test', 'waiter') $$,
   '42501', null, 'anon não vincula conta à loja');
+select throws_ok($$ select admin_update_store_menu_panel_rule('00000000-0000-4000-8000-0000000005a1', 40) $$,
+  '42501', null, 'anon não calibra a régua do painel');
 
 select * from finish();
 rollback;

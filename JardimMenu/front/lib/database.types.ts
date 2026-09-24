@@ -838,6 +838,7 @@ export type Database = {
           idle_table_alert_minutes: number
           is_active: boolean
           logo_url: string | null
+          menu_panel_low_view_pct: number
           name: string
           opening_hours: Json | null
           organization_id: string
@@ -854,6 +855,7 @@ export type Database = {
           idle_table_alert_minutes?: number
           is_active?: boolean
           logo_url?: string | null
+          menu_panel_low_view_pct?: number
           name: string
           opening_hours?: Json | null
           organization_id: string
@@ -870,6 +872,7 @@ export type Database = {
           idle_table_alert_minutes?: number
           is_active?: boolean
           logo_url?: string | null
+          menu_panel_low_view_pct?: number
           name?: string
           opening_hours?: Json | null
           organization_id?: string
@@ -1342,6 +1345,10 @@ export type Database = {
       }
       admin_update_store_idle_alert: {
         Args: { p_minutes: number; p_store_id: string }
+        Returns: undefined
+      }
+      admin_update_store_menu_panel_rule: {
+        Args: { p_pct: number; p_store_id: string }
         Returns: undefined
       }
       admin_upsert_category: {

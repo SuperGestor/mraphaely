@@ -106,6 +106,14 @@ const SCHEMAS = {
     p_store_id: uuid,
     p_minutes: z.number().int().min(30).max(1440),
   }),
+  // Régua do painel do cardápio (JM-062): a porcentagem da mediana de impressões abaixo da
+  // qual o produto entra em "pouco visto". É da casa, e não do sistema (decisão do PO em
+  // 24/09/2026): o que é pouco numa casa de dez mesas não é pouco numa de cem. Os limites
+  // são os mesmos do CHECK de stores, para a tela recusar antes de ir ao banco.
+  admin_update_store_menu_panel_rule: z.strictObject({
+    p_store_id: uuid,
+    p_pct: z.number().int().min(1).max(100),
+  }),
   // Modo de comanda da loja (JM-200) e contingência por mesa (JM-186): dono e gestor.
   admin_set_tab_mode: z.strictObject({
     p_store_id: uuid,
