@@ -2,7 +2,7 @@
 
 import { useCallback, useEffect, useState } from "react";
 import type { StoreRole, StoreUserRow } from "@/lib/types";
-import { ehContaJaExiste, mensagemDe } from "@/lib/admin-source";
+import { casoDoVinculo, ehConflito, ehContaJaExiste, mensagemDe, type CasoDoVinculo } from "@/lib/admin-source";
 import { useAdmin } from "@/components/admin/AdminContext";
 import { Badge, Button, Cell, Field, Hint, PageHeader, Panel, Row, Table, TextInput } from "@/components/admin/ui";
 
@@ -18,6 +18,15 @@ import { Badge, Button, Cell, Field, Hint, PageHeader, Panel, Row, Table, TextIn
  * falta é só o vínculo com ESTA loja, e é o que `admin_link_existing_user` grava. A tela
  * não vincula sozinha: ela oferece, com o papel à vista, e o dono confirma. Vincular dá
  * acesso à loja, e isso não pode ser efeito colateral de um convite.
+ *
+ * Desde 24/09/2026 esse mesmo caminho atende TRÊS situações, e a tela precisa dizer qual é
+ * antes do toque (`casoDoVinculo`, em lib/admin-source.ts):
+ * - quem nunca esteve nesta loja ganha acesso agora;
+ * - quem esteve e foi desativado VOLTA, com o papel escolhido aqui, que pode não ser o que
+ *   ela tinha — voltar como gestor quem era garçom é mudança de permissão, e o dono tem de
+ *   ler isso antes, não descobrir depois;
+ * - quem já está ativa segue sendo conflito (JM409), porque mudar papel é na lista de
+ *   usuários, e não pode ter um segundo caminho escondido no convite.
  */
 const PAPEL: Record<StoreRole, { rotulo: string; descricao: string }> = {
   owner: { rotulo: "Dono", descricao: "Tudo, mais usuários da loja" },
@@ -26,6 +35,53 @@ const PAPEL: Record<StoreRole, { rotulo: string; descricao: string }> = {
   kitchen: { rotulo: "Cozinha", descricao: "Sem tela na primeira versão (D24)" },
 };
 const PAPEIS = Object.keys(PAPEL) as StoreRole[];
+
+/** Nome do papel no meio da frase: "volta como garçom", e não "volta como Garçom". */
+const nomeDoPapel = (papel: StoreRole) => PAPEL[papel].rotulo.toLowerCase();
+
+interface Oferta {
+  email: string;
+  papel: StoreRole;
+  /** Congelado quando a oferta abre: o dono decide sobre o que leu, e não sobre uma lista que mudou embaixo dele. */
+  caso: CasoDoVinculo;
+}
+
+function tituloDaOferta(oferta: Oferta): string {
+  return oferta.caso.tipo === "voltando" ? `${oferta.email} já esteve nesta loja` : `${oferta.email} já tem conta`;
+}
+
+function textoDaOferta(oferta: Oferta, nomeDaLoja: string): string {
+  if (oferta.caso.tipo === "voltando") {
+    return (
+      `Essa conta está desativada em ${nomeDaLoja}, onde era ${nomeDoPapel(oferta.caso.papelAnterior)}. ` +
+      "Vincular de novo devolve o acesso na hora, com o papel escolhido abaixo. " +
+      "A pessoa entra com a senha que já usa."
+    );
+  }
+  if (oferta.caso.tipo === "nova") {
+    return (
+      "A conta já existe no sistema, então não há convite a enviar. Falta só dar a ela acesso a " +
+      `${nomeDaLoja}, com o papel abaixo. A pessoa entra com a senha que já usa.`
+    );
+  }
+  // Sem a lista carregada, dizer "nunca esteve aqui" seria chute. Fala dos dois caminhos.
+  return (
+    "A conta já existe no sistema, então não há convite a enviar. Se ela já esteve em " +
+    `${nomeDaLoja} e foi desativada, o acesso volta; se nunca esteve, ela ganha acesso agora. ` +
+    "Nos dois casos vale o papel abaixo, e a pessoa entra com a senha que já usa."
+  );
+}
+
+/** Só aparece quando a pessoa volta com papel diferente do que tinha: é aí que o acesso dela muda. */
+function avisoDeMudancaDePapel(oferta: Oferta): string | null {
+  if (oferta.caso.tipo !== "voltando" || oferta.caso.papelAnterior === oferta.papel) return null;
+  // O que cada papel pode já está escrito em cada opção da lista abaixo; aqui basta dizer
+  // que o acesso dela muda, que é o que o dono precisa ver antes de confirmar.
+  return (
+    `Ela era ${nomeDoPapel(oferta.caso.papelAnterior)} e vai voltar como ${nomeDoPapel(oferta.papel)}: ` +
+    "isso muda o que ela pode fazer na casa."
+  );
+}
 
 export default function AdminUsuarios() {
   const { source, loja, dono } = useAdmin();
@@ -36,17 +92,33 @@ export default function AdminUsuarios() {
   const [papel, setPapel] = useState<StoreRole>("waiter");
   const [enviando, setEnviando] = useState(false);
   /** Oferta de vínculo, criada só quando o convite volta com JMU01. */
-  const [vinculo, setVinculo] = useState<{ email: string; papel: StoreRole } | null>(null);
+  const [vinculo, setVinculo] = useState<Oferta | null>(null);
   const [vinculando, setVinculando] = useState(false);
 
-  const carregar = useCallback(() => {
-    source
-      .usuarios(loja.store_id)
-      .then(setUsuarios)
-      .catch((e: unknown) => setErro(mensagemDe(e)));
-  }, [source, loja.store_id]);
+  /**
+   * Devolve se a lista chegou. Quem escreve espera por ela antes de dizer que deu certo:
+   * o dono não recarrega a página à mão, e também não lê "entrou na loja" olhando para uma
+   * lista velha. Se a releitura falhar, a mensagem diz isso, em vez de mentir.
+   */
+  const carregar = useCallback(
+    () =>
+      source
+        .usuarios(loja.store_id)
+        .then((lista) => {
+          setUsuarios(lista);
+          setErro(null);
+          return true;
+        })
+        .catch((e: unknown) => {
+          setErro(mensagemDe(e));
+          return false;
+        }),
+    [source, loja.store_id],
+  );
 
-  useEffect(carregar, [carregar]);
+  useEffect(() => {
+    void carregar();
+  }, [carregar]);
 
   async function convidar() {
     const alvo = email.trim();
@@ -55,15 +127,29 @@ export default function AdminUsuarios() {
     setVinculo(null);
     try {
       await source.convidar({ store_id: loja.store_id, email: alvo, role: papel });
+      await carregar();
       setAviso(`Convite enviado para ${alvo}.`);
       setEmail("");
-      carregar();
     } catch (e: unknown) {
-      setAviso(mensagemDe(e));
       // Só este código abre a oferta de vínculo: o e-mail tem conta no Auth e falta o
       // vínculo com esta loja (JM-052). O e-mail continua no campo, para a pessoa ver de
       // qual conta se trata.
-      if (ehContaJaExiste(e)) setVinculo({ email: alvo, papel });
+      if (!ehContaJaExiste(e)) {
+        setAviso(mensagemDe(e));
+        return;
+      }
+      const caso = casoDoVinculo(usuarios, alvo);
+      if (caso.tipo === "ja_ativa") {
+        // Nada a oferecer: a function responderia JM409. A tela evita o toque perdido e
+        // manda o dono ao lugar certo de mudar papel.
+        setAviso(
+          `${alvo} já está na lista aqui embaixo, como ${nomeDoPapel(caso.papel)}, com acesso a ${loja.nome}. ` +
+            "Para mudar o papel, use a própria lista.",
+        );
+        return;
+      }
+      // A oferta explica o caso; repetir a mensagem do servidor aqui em cima só duplicaria.
+      setVinculo({ email: alvo, papel, caso });
     } finally {
       setEnviando(false);
     }
@@ -72,6 +158,7 @@ export default function AdminUsuarios() {
   /** Vincula a conta que já existe (JM-052). O papel é o que está à vista na oferta. */
   async function vincular() {
     if (!vinculo) return;
+    const voltando = vinculo.caso.tipo === "voltando";
     setVinculando(true);
     setAviso(null);
     try {
@@ -80,11 +167,24 @@ export default function AdminUsuarios() {
         p_email: vinculo.email,
         p_role: vinculo.papel,
       });
-      setAviso(`${vinculo.email} entrou na loja como ${PAPEL[vinculo.papel].rotulo.toLowerCase()}.`);
       setVinculo(null);
       setEmail("");
-      carregar();
+      const atualizou = await carregar();
+      const feito = voltando
+        ? `${vinculo.email} voltou para a loja como ${nomeDoPapel(vinculo.papel)}.`
+        : `${vinculo.email} entrou na loja como ${nomeDoPapel(vinculo.papel)}.`;
+      setAviso(atualizou ? feito : `${feito} A lista abaixo não recarregou: atualize a página para vê-la.`);
     } catch (e: unknown) {
+      if (ehConflito(e)) {
+        // A lista estava velha: a conta já tinha acesso. Recarrega para ela aparecer, e
+        // diz onde se muda papel.
+        setVinculo(null);
+        await carregar();
+        setAviso(
+          `${vinculo.email} já tem acesso a ${loja.nome}. Para mudar o papel, use a lista de usuários aqui embaixo.`,
+        );
+        return;
+      }
       setAviso(mensagemDe(e));
     } finally {
       setVinculando(false);
@@ -98,28 +198,31 @@ export default function AdminUsuarios() {
     setAviso(null);
     try {
       await source.alterarUsuario(u.id, corpo);
-      carregar();
+      await carregar();
     } catch (e: unknown) {
       setAviso(mensagemDe(e));
     }
   }
 
   const emailValido = /^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email.trim());
+  const mudancaDePapel = vinculo ? avisoDeMudancaDePapel(vinculo) : null;
 
   return (
     <>
       <PageHeader titulo="Usuários" descricao="Quem entra no sistema da casa, e com qual papel." />
 
-      {aviso ? (
-        <div className="mb-4">
-          <Hint>{aviso}</Hint>
-        </div>
-      ) : null}
+      <div role="status" aria-live="polite">
+        {aviso ? (
+          <div className="mb-4">
+            <Hint>{aviso}</Hint>
+          </div>
+        ) : null}
+      </div>
 
       {dono ? (
         <Panel
           titulo="Convidar"
-          descricao="A pessoa recebe um e-mail para criar a senha e entra já com o papel escolhido. Se o e-mail já tiver conta, a tela oferece vincular essa conta a esta loja."
+          descricao="A pessoa recebe um e-mail para criar a senha e entra já com o papel escolhido. Se o e-mail já tiver conta, a tela oferece dar acesso a esta loja — inclusive para quem já esteve aqui e foi desativado."
         >
           <div className="grid gap-4 min-[1100px]:grid-cols-[2fr_1fr_auto] min-[1100px]:items-end">
             <Field rotulo="E-mail">
@@ -145,39 +248,49 @@ export default function AdminUsuarios() {
             </div>
           </div>
 
-          {vinculo ? (
-            <div className="border-line rounded-input border-2 p-4">
-              <h3 className="text-base font-bold">{vinculo.email} já tem conta</h3>
-              <p className="text-muted mt-1 text-sm">
-                A conta já existe no sistema, então não há convite a enviar. Falta só dar a ela acesso a{" "}
-                {loja.nome}, com o papel abaixo. A pessoa entra com a senha que já usa.
-              </p>
-              <div className="mt-4 grid gap-4 min-[1100px]:grid-cols-[1fr_auto] min-[1100px]:items-end">
-                <Field rotulo="Papel na loja">
-                  <select
-                    value={vinculo.papel}
-                    onChange={(e) => setVinculo({ ...vinculo, papel: e.target.value as StoreRole })}
-                    aria-label={`Papel de ${vinculo.email} nesta loja`}
-                    className="rounded-input border-line bg-canvas jm-touch jm-focus w-full border-2 px-4 text-base"
-                  >
-                    {PAPEIS.map((p) => (
-                      <option key={p} value={p}>
-                        {PAPEL[p].rotulo} — {PAPEL[p].descricao}
-                      </option>
-                    ))}
-                  </select>
-                </Field>
-                <div className="mb-6 flex flex-wrap gap-3">
-                  <Button onClick={vincular} disabled={vinculando}>
-                    {vinculando ? "Vinculando…" : "Vincular esta conta à loja"}
-                  </Button>
-                  <Button variante="secundario" onClick={() => setVinculo(null)} disabled={vinculando}>
-                    Agora não
-                  </Button>
+          {/* A oferta é a resposta ao toque em Convidar: nasce dentro de uma região viva, para
+              quem usa leitor de tela ouvir o que apareceu sem procurar. */}
+          <div aria-live="polite">
+            {vinculo ? (
+              <div className="border-line rounded-input border-2 p-4">
+                <h3 className="text-base font-bold">{tituloDaOferta(vinculo)}</h3>
+                <p className="text-muted mt-1 text-sm">{textoDaOferta(vinculo, loja.nome)}</p>
+                {mudancaDePapel ? (
+                  <div className="mt-3">
+                    <Hint>{mudancaDePapel}</Hint>
+                  </div>
+                ) : null}
+                <div className="mt-4 grid gap-4 min-[1100px]:grid-cols-[1fr_auto] min-[1100px]:items-end">
+                  <Field rotulo="Papel na loja">
+                    <select
+                      value={vinculo.papel}
+                      onChange={(e) => setVinculo({ ...vinculo, papel: e.target.value as StoreRole })}
+                      aria-label={`Papel de ${vinculo.email} nesta loja`}
+                      className="rounded-input border-line bg-canvas jm-touch jm-focus w-full border-2 px-4 text-base"
+                    >
+                      {PAPEIS.map((p) => (
+                        <option key={p} value={p}>
+                          {PAPEL[p].rotulo} — {PAPEL[p].descricao}
+                        </option>
+                      ))}
+                    </select>
+                  </Field>
+                  <div className="mb-6 flex flex-wrap gap-3">
+                    <Button onClick={vincular} disabled={vinculando}>
+                      {vinculando
+                        ? "Vinculando…"
+                        : vinculo.caso.tipo === "voltando"
+                          ? "Devolver o acesso a esta pessoa"
+                          : "Vincular esta conta à loja"}
+                    </Button>
+                    <Button variante="secundario" onClick={() => setVinculo(null)} disabled={vinculando}>
+                      Agora não
+                    </Button>
+                  </div>
                 </div>
               </div>
-            </div>
-          ) : null}
+            ) : null}
+          </div>
         </Panel>
       ) : (
         <Hint>Só o dono da loja convida, muda papel ou desativa usuários.</Hint>

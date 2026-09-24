@@ -120,6 +120,49 @@ export function ehContaJaExiste(erro: unknown): boolean {
   return erro instanceof FalhaDoAdmin && erro.codigo === CODIGO_CONTA_JA_EXISTE;
 }
 
+/**
+ * Conflito genérico do banco (JM409, `back/errors.ts`). Em `admin_link_existing_user` ele
+ * tem um significado só desde 24/09/2026: a conta JÁ ESTÁ ATIVA nesta loja. Os outros dois
+ * casos deixaram de ser conflito — quem nunca esteve aqui é inserido, e quem estava
+ * desativado é reativado com o papel pedido.
+ *
+ * A mensagem do catálogo é genérica de propósito ("Conflito com o estado atual"), porque o
+ * mesmo código sai de outras functions. Quem sabe o que o dono acabou de pedir é a tela, e
+ * é ela que diz o que fazer.
+ */
+export const CODIGO_CONFLITO = "JM409";
+
+export function ehConflito(erro: unknown): boolean {
+  return erro instanceof FalhaDoAdmin && erro.codigo === CODIGO_CONFLITO;
+}
+
+/**
+ * Em que situação está o e-mail cujo convite voltou com JMU01 (JM-052). O JMU01 diz só que
+ * a conta existe no Auth; o que a tela precisa dizer ao dono ANTES de ele confirmar é o que
+ * vai acontecer NESTA loja, e isso está na lista de usuários, que já traz os desativados
+ * (`admin_list_store_users` ordena por ativo primeiro, mas devolve os dois).
+ *
+ * - `indefinido`: a lista ainda não chegou. A tela não inventa: fala dos dois casos.
+ * - `nova`: não está nesta loja. Ganha acesso agora.
+ * - `voltando`: está desativada. O vínculo é reativado com o papel escolhido, e por isso o
+ *   papel que ela TINHA vem junto: voltar com papel diferente é mudança de permissão.
+ * - `ja_ativa`: está ativa. Não há o que vincular, e a function responde JM409.
+ */
+export type CasoDoVinculo =
+  | { tipo: "indefinido" }
+  | { tipo: "nova" }
+  | { tipo: "voltando"; papelAnterior: StoreRole }
+  | { tipo: "ja_ativa"; papel: StoreRole };
+
+/** O `trim` e o caixa-baixa repetem o `lower(trim(p_email))` da function, para a tela e o banco acharem a mesma conta. */
+export function casoDoVinculo(usuarios: StoreUserRow[] | null, email: string): CasoDoVinculo {
+  if (!usuarios) return { tipo: "indefinido" };
+  const alvo = email.trim().toLowerCase();
+  const naLoja = usuarios.find((u) => u.email.trim().toLowerCase() === alvo);
+  if (!naLoja) return { tipo: "nova" };
+  return naLoja.is_active ? { tipo: "ja_ativa", papel: naLoja.role } : { tipo: "voltando", papelAnterior: naLoja.role };
+}
+
 export interface AdminSource {
   modo: "exemplo" | "real";
   contexto(): Promise<ContextoDoAdmin>;
