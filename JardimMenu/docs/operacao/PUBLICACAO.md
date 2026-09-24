@@ -60,7 +60,7 @@ ela anotada, o retorno vira adivinhação.
 ### 2. Publicar no staging
 
 ```bash
-cd /opt/jardim-menu
+cd /opt/jardim/repo
 git fetch --all
 git checkout <a-versão-que-vai-subir>
 ```
@@ -79,7 +79,7 @@ Mesmo que o backup automático tenha rodado às 5h. O que vai quebrar é o que
 você está prestes a fazer, não o que aconteceu de madrugada.
 
 ```bash
-sudo /opt/jardim-menu/JardimMenu/infra/backup/backup.sh --ambiente producao
+sudo /opt/jardim/repo/JardimMenu/infra/backup/backup.sh --ambiente producao
 ```
 
 Espere terminar e **confira que o arquivo apareceu**:
@@ -94,7 +94,7 @@ Uma migração só é testada de verdade se rodar sobre dados parecidos com os d
 verdade. Restaure o backup de produção no staging:
 
 ```bash
-sudo /opt/jardim-menu/JardimMenu/infra/backup/restaurar.sh
+sudo /opt/jardim/repo/JardimMenu/infra/backup/restaurar.sh
 ```
 
 Ele já confere a contagem das tabelas e imprime o resultado. Se aparecer
@@ -157,7 +157,7 @@ A mesma lista do passo 6, na produção, e mais:
 - [ ] `verificar.sh --estado` mostra tudo em `ok`:
 
 ```bash
-sudo /opt/jardim-menu/JardimMenu/infra/monitoramento/verificar.sh --estado
+sudo /opt/jardim/repo/JardimMenu/infra/monitoramento/verificar.sh --estado
 ```
 
 ### 10. Os tablets (NF-018)
@@ -189,7 +189,7 @@ O mais simples. Volte o app para a versão anterior, aquela que você anotou no
 passo 1:
 
 ```bash
-cd /opt/jardim-menu
+cd /opt/jardim/repo
 git checkout <a-versão-anterior>
 sudo JardimMenu/infra/scripts/publicar.sh producao
 ```
@@ -210,7 +210,7 @@ desfaz sozinha: o caminho é restaurar o backup daquele momento **em produção*
 o que apaga tudo que entrou desde o backup.
 
 ```bash
-sudo /opt/jardim-menu/JardimMenu/infra/backup/restaurar.sh \
+sudo /opt/jardim/repo/JardimMenu/infra/backup/restaurar.sh \
      --para producao --confirmo-producao
 ```
 

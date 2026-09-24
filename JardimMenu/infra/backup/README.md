@@ -40,7 +40,7 @@ que ninguém abriu é o clássico do backup que não existe.
 ## Instalação no servidor
 
 Pressupostos: VPS Linux (Ubuntu 22.04 ou 24.04, x86_64), Docker instalado, o
-repositório clonado em `/opt/jardim-menu` e o Supabase auto-hospedado subindo
+repositório clonado em `/opt/jardim/repo` e o Supabase auto-hospedado subindo
 pelo compose da frente de infraestrutura (`infra/compose`).
 
 ```bash
@@ -54,7 +54,7 @@ sudo apt install -y rclone curl   # docker já deve estar instalado
 
 # 3. configuração, fora do git
 sudo install -d -m 700 /etc/jardim-menu
-sudo cp /opt/jardim-menu/JardimMenu/infra/backup/exemplo/backup.env.exemplo \
+sudo cp /opt/jardim/repo/JardimMenu/infra/backup/exemplo/backup.env.exemplo \
         /etc/jardim-menu/backup.env
 sudo chmod 600 /etc/jardim-menu/backup.env
 sudo nano /etc/jardim-menu/backup.env      # preencha tudo, ver abaixo
@@ -69,7 +69,12 @@ sudo install -d -m 700 /var/backups/jardim-menu
 sudo install -d -m 700 /var/lib/jardim-menu/backup
 
 # 6. unidades do systemd
-sudo cp /opt/jardim-menu/JardimMenu/infra/backup/systemd/jardim-backup.* \
+# As três unidades. O glob jardim-backup.* pega a service e a timer, mas NÃO pega a
+# jardim-backup-falhou.service, e sem ela o OnFailure dispara uma unidade inexistente:
+# o backup pareceria vigiado sem estar.
+sudo cp /opt/jardim/repo/JardimMenu/infra/backup/systemd/jardim-backup.service \
+        /opt/jardim/repo/JardimMenu/infra/backup/systemd/jardim-backup.timer \
+        /opt/jardim/repo/JardimMenu/infra/backup/systemd/jardim-backup-falhou.service \
         /etc/systemd/system/
 sudo systemctl daemon-reload
 sudo systemctl enable --now jardim-backup.timer
@@ -81,13 +86,16 @@ Primeira rodada à mão, sem esperar as 5h:
 ```bash
 sudo systemctl start jardim-backup.service
 journalctl -u jardim-backup.service -n 60 --no-pager
+
+# E prove que o aviso de última instância funciona ANTES de precisar dele:
+sudo systemctl start jardim-backup-falhou.service   # deve chegar mensagem no Telegram
 sudo ls -lh /var/backups/jardim-menu/producao/
 ```
 
 Para um ensaio que não escreve nada em lugar nenhum:
 
 ```bash
-sudo /opt/jardim-menu/JardimMenu/infra/backup/backup.sh --simular --sem-remoto
+sudo /opt/jardim/repo/JardimMenu/infra/backup/backup.sh --simular --sem-remoto
 ```
 
 ## O que você precisa ajustar (e por que não veio pronto)
@@ -137,7 +145,7 @@ sudo crontab -e
 # Backup do Jardim Menu, todo dia às 05:00 (NF-011).
 # O cron usa o fuso do servidor: mantenha-o em America/Sao_Paulo.
 CRON_TZ=America/Sao_Paulo
-0 5 * * * JARDIM_BACKUP_ENV=/etc/jardim-menu/backup.env /opt/jardim-menu/JardimMenu/infra/backup/backup.sh >> /var/log/jardim-backup.log 2>&1
+0 5 * * * JARDIM_BACKUP_ENV=/etc/jardim-menu/backup.env /opt/jardim/repo/JardimMenu/infra/backup/backup.sh >> /var/log/jardim-backup.log 2>&1
 ```
 
 Três diferenças que você aceita ao escolher cron:
@@ -154,7 +162,7 @@ Três diferenças que você aceita ao escolher cron:
 backup serve para alguma coisa:
 
 ```bash
-sudo /opt/jardim-menu/JardimMenu/infra/backup/restaurar.sh
+sudo /opt/jardim/repo/JardimMenu/infra/backup/restaurar.sh
 ```
 
 Sem argumento nenhum, ele pega o dump mais recente de **produção**, restaura no
@@ -165,7 +173,7 @@ Para provar que a cópia externa também serve (é ela que salva quando o servid
 some), rode a mesma coisa buscando lá fora:
 
 ```bash
-sudo /opt/jardim-menu/JardimMenu/infra/backup/restaurar.sh --do-remoto
+sudo /opt/jardim/repo/JardimMenu/infra/backup/restaurar.sh --do-remoto
 ```
 
 Opções úteis: `--tudo` (restaura todos os esquemas, não só `public`, `auth` e

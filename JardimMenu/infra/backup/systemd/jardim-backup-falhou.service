@@ -5,7 +5,7 @@
 # TimeoutStartSec estourado, OOM), o backup.sh não rodou uma linha sequer e este serviço é
 # o único que abre a boca.
 Description=Avisa no Telegram que o backup do Jardim Menu falhou
-Documentation=file:/opt/jardim-menu/JardimMenu/infra/backup/README.md
+Documentation=file:/opt/jardim/repo/JardimMenu/infra/backup/README.md
 # Sem OnFailure= aqui, de propósito: aviso que avisa sobre aviso vira laço. Se este falhar,
 # fica no journal e aparece em `systemctl --failed`.
 
@@ -14,11 +14,11 @@ Type=oneshot
 User=root
 # /usr/local/sbin, e NÃO a pasta do repositório: um dos motivos de o backup falhar é
 # justamente o caminho do repositório estar errado (o README desta pasta fala em
-# /opt/jardim-menu e o preparar-servidor.sh clona em /opt/jardim/repo). Um aviso que mora
+# /opt/jardim/repo e o preparar-servidor.sh clona em /opt/jardim/repo). Um aviso que mora
 # no mesmo caminho que pode estar errado não avisa nada. Instale com:
 #   sudo install -m 750 <repo>/infra/backup/systemd/avisar-falha.sh \
 #        /usr/local/sbin/jardim-avisar-falha
-ExecStart=/usr/local/sbin/jardim-avisar-falha jardim-backup.service
+ExecStart=/opt/jardim/repo/JardimMenu/infra/backup/systemd/avisar-falha.sh jardim-backup.service
 # O token do Telegram é lido de dentro deste arquivo pelo script, sem `source` e sem
 # passar por linha de comando (linha de comando aparece no `ps` de qualquer usuário).
 Environment=JARDIM_BACKUP_ENV=/etc/jardim-menu/backup.env

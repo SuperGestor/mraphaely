@@ -97,6 +97,17 @@ MENSAGEM="$(printf '%s\n' \
 
 # ---------------------------------------------------------------- envio
 
+# Sem canal configurado, o jm_telegram devolve 0 de propósito (ver lib/comum.sh): para o
+# monitor de rotina isso está certo, porque não há o que tentar de novo. Aqui, NÃO: este
+# script é o aviso de última instância, e sair 0 sem ter avisado ninguém é exatamente a
+# falha silenciosa que ele existe para impedir. Sem token, a unidade precisa aparecer em
+# `systemctl --failed`, que é o único sinal que sobra na máquina.
+if [ -z "${ALERT_TELEGRAM_BOT_TOKEN:-}" ] || [ -z "${ALERT_TELEGRAM_CHAT_ID:-}" ]; then
+  jm_log "AVISO QUE NÃO PÔDE SER ENVIADO: $MENSAGEM"
+  jm_erro "${UNIDADE} falhou e NÃO houve como avisar: falta ALERT_TELEGRAM_BOT_TOKEN ou ALERT_TELEGRAM_CHAT_ID em ${ARQUIVO_CONFIG}."
+  exit 1
+fi
+
 if jm_telegram "$MENSAGEM"; then
   # Carimbo só serve para não repetir o aviso. Se nem isso der para gravar (diretório de
   # estado inexistente, disco cheio), o aviso já saiu: vale mais dizer no journal e sair

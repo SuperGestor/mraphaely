@@ -119,7 +119,7 @@ olhar o registro mesmo com tudo verde.
 ## Ver o estado agora, sem esperar aviso
 
 ```bash
-sudo /opt/jardim-menu/JardimMenu/infra/monitoramento/verificar.sh --estado
+sudo /opt/jardim/repo/JardimMenu/infra/monitoramento/verificar.sh --estado
 ```
 
 Mostra, verificação por verificação, se o monitor a considera `ok` ou `caido`.

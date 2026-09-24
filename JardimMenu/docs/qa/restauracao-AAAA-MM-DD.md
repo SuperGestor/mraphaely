@@ -49,7 +49,7 @@
 ## 4. O comando
 
 ```bash
-sudo /opt/jardim-menu/JardimMenu/infra/backup/restaurar.sh
+sudo /opt/jardim/repo/JardimMenu/infra/backup/restaurar.sh
 ```
 
 > Cole abaixo a saída do script, inteira. É ela que dá a contagem e o tempo.

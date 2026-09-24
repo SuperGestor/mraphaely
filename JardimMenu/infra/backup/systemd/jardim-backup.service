@@ -2,9 +2,9 @@
 # Backup diário do Jardim Menu (NF-011). Quem dispara é o timer de mesmo nome.
 Description=Backup diário do Jardim Menu (banco, fotos do Storage e cópia externa)
 # Mesmo caminho do ExecStart abaixo. Antes esta linha apontava um nível acima
-# (/opt/jardim-menu/infra/...), e dois caminhos diferentes para a mesma instalação no mesmo
+# (/opt/jardim/repo/infra/...), e dois caminhos diferentes para a mesma instalação no mesmo
 # arquivo é como um deles vira o errado sem ninguém notar.
-Documentation=file:/opt/jardim-menu/JardimMenu/infra/backup/README.md
+Documentation=file:/opt/jardim/repo/JardimMenu/infra/backup/README.md
 # O backup fala com os contêineres do Supabase e com a internet: espera os dois.
 After=network-online.target docker.service
 Wants=network-online.target
@@ -23,7 +23,7 @@ OnFailure=jardim-backup-falhou.service
 [Service]
 Type=oneshot
 User=root
-# O caminho abaixo pressupõe o repositório em /opt/jardim-menu, como manda o README desta
+# O caminho abaixo pressupõe o repositório em /opt/jardim/repo, como manda o README desta
 # pasta. ATENÇÃO: o infra/scripts/preparar-servidor.sh usa outro layout — ele cria
 # /opt/jardim e clona em /opt/jardim/repo, e aí o caminho é
 # /opt/jardim/repo/JardimMenu/infra/backup/backup.sh. Os dois não podem estar certos ao
@@ -34,7 +34,7 @@ User=root
 #   [Service]
 #   ExecStart=
 #   ExecStart=/opt/jardim/repo/JardimMenu/infra/backup/backup.sh
-ExecStart=/opt/jardim-menu/JardimMenu/infra/backup/backup.sh
+ExecStart=/opt/jardim/repo/JardimMenu/infra/backup/backup.sh
 Environment=JARDIM_BACKUP_ENV=/etc/jardim-menu/backup.env
 # Dump e upload não podem atrapalhar o salão. Se o backup rodar às 5h, a casa
 # está fechada, mas a folga aqui é barata.

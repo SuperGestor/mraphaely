@@ -49,8 +49,20 @@
 		# O app não usa câmera nem localização: quem lê a plaquinha com QR é o app de
 		# câmera do próprio celular (CLAUDE.md), nunca uma tela nossa.
 		Permissions-Policy "camera=(), microphone=(), geolocation=(), payment=()"
-		# Versão do servidor é informação de graça para quem varre a internet.
+		# Versão do servidor é informação de graça para quem varre a internet, e tirar
+		# só o Server não bastava: cada upstream anuncia a sua por um cabeçalho
+		# próprio, e eles passavam intactos por aqui. O Kong 2.8.1 sobe com
+		# `headers = server_tokens, latency_tokens` (o compose não mexe nisso), então
+		# toda resposta da API saía com Via: kong/2.8.1 e os dois X-Kong-*-Latency; o
+		# Next manda X-Powered-By: Next.js por padrão. Ou seja: o host da API entregava
+		# o nome e a versão exata do gateway, e o host do app entregava o framework,
+		# sem uma única requisição autenticada. Nomes fixos em vez de curinga porque a
+		# versão do Kong está fixada no compose e estes são os cabeçalhos que ela emite.
 		-Server
+		-Via
+		-X-Kong-Proxy-Latency
+		-X-Kong-Upstream-Latency
+		-X-Powered-By
 	}
 }
 

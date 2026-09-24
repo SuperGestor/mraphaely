@@ -157,6 +157,22 @@ executar() {
 
 # Dump do banco em formato custom. O -Fc é o que o NF-011 pede na prática: dá
 # para restaurar por partes e para listar o conteúdo sem restaurar nada.
+# Promove o arquivo .parcial, e FALHA se não conseguir.
+#
+# Existe porque `mv` seguido de `jm_log` fazia o retorno da função ser o do jm_log, que é
+# sempre 0. Como estes passos são chamados como condição de `if`, o `set -e` do topo não
+# vale dentro deles: um mv que falha — disco cheio, sistema remontado só de leitura,
+# permissão — passava por sucesso, o arquivo inexistente entrava na lista dos gerados, e a
+# rodada terminava com "backup em dia" sem o arquivo existir.
+mv_ou_falhar() {
+  local de="$1" para="$2" ambiente="$3" oque="$4"
+  if ! mv "$de" "$para"; then
+    rm -f "$de"
+    jm_erro "[$ambiente] não consegui guardar $oque em $para."
+    return 1
+  fi
+}
+
 dump_banco() {
   local ambiente="$1" destino="$2"
   local modo container user db host porta senha parcial
@@ -218,7 +234,7 @@ dump_banco() {
     return 1
   fi
 
-  mv "$parcial" "$destino"
+  mv_ou_falhar "$parcial" "$destino" "$ambiente" "o dump do banco" || return 1
   jm_log "[$ambiente] dump pronto: $(jm_tamanho "$destino")"
 }
 
@@ -283,7 +299,7 @@ dump_globais() {
       ;;
   esac
 
-  mv "$parcial" "$destino"
+  mv_ou_falhar "$parcial" "$destino" "$ambiente" "o arquivo de papéis" || return 1
   jm_log "[$ambiente] papéis guardados: $(jm_tamanho "$destino")"
 }
 
@@ -317,7 +333,7 @@ dump_storage() {
     return 1
   fi
 
-  mv "${destino}.parcial" "$destino"
+  mv_ou_falhar "${destino}.parcial" "$destino" "$ambiente" "as fotos do Storage" || return 1
   jm_log "[$ambiente] fotos guardadas: $(jm_tamanho "$destino")"
 }
 
@@ -329,7 +345,7 @@ manifesto_contagens() {
   if [ "$SIMULAR" = "sim" ]; then return 0; fi
   jm_contagens "$ambiente" "$TABELAS_CONFERIDAS" > "${destino}.parcial" \
     || { rm -f "${destino}.parcial"; return 1; }
-  mv "${destino}.parcial" "$destino"
+  mv_ou_falhar "${destino}.parcial" "$destino" "$ambiente" "o manifesto de contagens" || return 1
   sed 's/^/    /' "$destino"
 }
 
@@ -387,10 +403,16 @@ limpar_antigos() {
   local quantos=0
 
   # Ordenados do mais novo para o mais velho pela data de modificação.
-  mapfile -t dumps < <(
-    find "$dir" -maxdepth 1 -type f -name 'jardim-*.dump' -printf '%T@\t%p\n' 2>/dev/null \
+  # Sem 2>/dev/null: esta consulta monta a lista do que NÃO pode ser apagado. Se ela
+  # falhar calada — pasta ilegível, find sem -printf — o piso da retenção some e a
+  # limpeza fica livre para esvaziar a pasta. Na dúvida, não se apaga nada.
+  if ! mapfile -t dumps < <(
+    find "$dir" -maxdepth 1 -type f -name 'jardim-*.dump' -printf '%T@\t%p\n' \
       | sort -rn | cut -f2-
-  )
+  ); then
+    jm_erro "[$ambiente] não consegui listar os dumps de $dir; nada foi apagado."
+    return 1
+  fi
   for arquivo in "${dumps[@]}"; do
     [ "$quantos" -lt "$MINIMO_DUMPS_MANTIDOS" ] || break
     protegidos+=("${arquivo%.dump}")

@@ -56,7 +56,7 @@ O teste é sempre o mesmo: pegar o backup de **produção** e restaurá-lo no
 **staging**.
 
 ```bash
-sudo /opt/jardim-menu/JardimMenu/infra/backup/restaurar.sh
+sudo /opt/jardim/repo/JardimMenu/infra/backup/restaurar.sh
 ```
 
 O script pega o dump mais recente de produção, restaura no staging, compara
@@ -74,7 +74,7 @@ Para provar que a **cópia externa** também presta — é ela que salva no dia 
 que o servidor some — repita buscando lá fora:
 
 ```bash
-sudo /opt/jardim-menu/JardimMenu/infra/backup/restaurar.sh --do-remoto
+sudo /opt/jardim/repo/JardimMenu/infra/backup/restaurar.sh --do-remoto
 ```
 
 ### Registrar

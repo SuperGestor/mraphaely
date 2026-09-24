@@ -80,20 +80,20 @@ O estado fica em `/var/lib/jardim-menu/monitoramento`, um arquivo por
 verificação. Para ver o que o monitor acha que está acontecendo agora:
 
 ```bash
-sudo /opt/jardim-menu/JardimMenu/infra/monitoramento/verificar.sh --estado
+sudo /opt/jardim/repo/JardimMenu/infra/monitoramento/verificar.sh --estado
 ```
 
 ## Instalação
 
 ```bash
 sudo install -d -m 700 /etc/jardim-menu /var/lib/jardim-menu/monitoramento
-sudo cp /opt/jardim-menu/JardimMenu/infra/monitoramento/exemplo/monitoramento.env.exemplo \
+sudo cp /opt/jardim/repo/JardimMenu/infra/monitoramento/exemplo/monitoramento.env.exemplo \
         /etc/jardim-menu/monitoramento.env
 sudo chmod 600 /etc/jardim-menu/monitoramento.env
 sudo nano /etc/jardim-menu/monitoramento.env     # endereços, chaves, contêineres
 
 # jardim-monitor* pega as três unidades: a verificação, o timer e o aviso de falha.
-sudo cp /opt/jardim-menu/JardimMenu/infra/monitoramento/systemd/jardim-monitor* \
+sudo cp /opt/jardim/repo/JardimMenu/infra/monitoramento/systemd/jardim-monitor* \
         /etc/systemd/system/
 sudo systemctl daemon-reload
 sudo systemctl enable --now jardim-monitor.timer
@@ -103,7 +103,7 @@ systemctl list-timers jardim-monitor.timer
 Teste sem esperar, avisando já na primeira falha:
 
 ```bash
-sudo /opt/jardim-menu/JardimMenu/infra/monitoramento/verificar.sh --uma-vez
+sudo /opt/jardim/repo/JardimMenu/infra/monitoramento/verificar.sh --uma-vez
 journalctl -u jardim-monitor.service -n 40 --no-pager
 ```
 

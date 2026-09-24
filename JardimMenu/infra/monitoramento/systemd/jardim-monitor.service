@@ -1,7 +1,7 @@
 [Unit]
 # Verificação de saúde do Jardim Menu. Quem dispara é o timer de mesmo nome.
 Description=Verificação de saúde do Jardim Menu (app, API, contêineres e disco)
-Documentation=file:/opt/jardim-menu/JardimMenu/infra/monitoramento/README.md
+Documentation=file:/opt/jardim/repo/JardimMenu/infra/monitoramento/README.md
 After=network-online.target docker.service
 Wants=network-online.target
 # Quem avisa quando alguma coisa cai é o próprio verificar.sh. Quando é ELE que não
@@ -15,8 +15,8 @@ OnFailure=jardim-monitor-falhou.service
 [Service]
 Type=oneshot
 User=root
-# Ajuste o caminho se o repositório não estiver em /opt/jardim-menu.
-ExecStart=/opt/jardim-menu/JardimMenu/infra/monitoramento/verificar.sh
+# Ajuste o caminho se o repositório não estiver em /opt/jardim/repo.
+ExecStart=/opt/jardim/repo/JardimMenu/infra/monitoramento/verificar.sh
 Environment=JARDIM_MONITOR_ENV=/etc/jardim-menu/monitoramento.env
 # Menor que o intervalo do timer: uma verificação nunca pode atropelar a
 # seguinte. Se estourar, o systemd mata, e o flock do script protege o resto.

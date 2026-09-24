@@ -72,10 +72,13 @@ TEXTO="$(printf '%s\n' \
   "Fim do journal:" \
   "${TRECHO}")"
 
+# Sai 1, e não 0: este é o aviso de última instância, e terminar bem sem ter avisado
+# ninguém é a falha silenciosa que ele existe para impedir. Com 1, a unidade aparece em
+# `systemctl --failed`, que é o único sinal que sobra na máquina quando não há canal.
 if [ -z "$TOKEN" ] || [ -z "$CHAT" ]; then
-  registrar "AVISO: Telegram não configurado em ${CONFIG}; o aviso fica só aqui no journal."
-  registrar "AVISO QUE SERIA ENVIADO: ${TEXTO}"
-  exit 0
+  registrar "AVISO QUE NÃO PÔDE SER ENVIADO: ${TEXTO}"
+  registrar "ERRO: ${UNIDADE} falhou e NÃO houve como avisar: falta ALERT_TELEGRAM_BOT_TOKEN ou ALERT_TELEGRAM_CHAT_ID em ${CONFIG}."
+  exit 1
 fi
 
 # A URL vai por stdin (curl -K -), e não na linha de comando: a URL carrega o token do bot,
