@@ -3,20 +3,31 @@
 import { useCallback, useEffect, useState } from "react";
 import { mensagemDe } from "@/lib/admin-source";
 import {
+  MAXIMO_DA_REGUA,
+  MINIMO_DA_REGUA,
+  lerDestaque,
   lerPainel,
+  lerRegua,
   painelVazio,
+  porcentagemDaRegua,
+  rotuloDaRegua,
   rotuloDeConversao,
   rotuloDoTurno,
   type LinhaDoPainel,
   type PainelDoCardapio,
 } from "@/lib/painel-do-cardapio";
 import { useAdmin } from "@/components/admin/AdminContext";
-import { Badge, Button, Cell, Hint, PageHeader, Panel, Row, Table } from "@/components/admin/ui";
+import { Badge, Button, Cell, Field, Hint, PageHeader, Panel, Row, Table, TextInput } from "@/components/admin/ui";
 
 /**
  * Painel do cardápio (JM-062, P9): o que o cliente vê, o que ele toca e o que ele pede,
- * por turno, em quatro listas — nunca vistos, pouco vistos, vistos sem conversão e
- * campeões de conversão.
+ * por turno, em cinco listas — merece destaque, nunca vistos, pouco vistos, vistos sem
+ * conversão e campeões de conversão.
+ *
+ * "Merece destaque" vem primeiro de propósito (decisão do PO em 24/09/2026): é a única que
+ * pede para o produto SUBIR no cardápio, e as outras pedem para rever ou tirar. Quem está
+ * nela foi tirado de "nunca vistos" e de "pouco vistos" pela própria function, porque
+ * produto que vende não é candidato a sair.
  *
  * Só dono e gestor, como o requisito pede. A defesa de verdade é a function
  * `admin_menu_panel`, que confere o papel no banco; a tela recusa antes só para o garçom
@@ -24,7 +35,8 @@ import { Badge, Button, Cell, Hint, PageHeader, Panel, Row, Table } from "@/comp
  *
  * Quem decide o turno é o banco, com `shift_date` (D12, regra 5 do CLAUDE.md): a tela
  * nunca manda "hoje", manda nulo, e anda para trás e para a frente com as datas que o
- * próprio painel devolve.
+ * próprio painel devolve. A régua de "pouco visto" segue o mesmo caminho: a tela grava a
+ * porcentagem e relê o painel, em vez de recalcular a lista aqui.
  */
 const numero = new Intl.NumberFormat("pt-BR");
 
@@ -34,6 +46,11 @@ export default function AdminPainel() {
   const [painel, setPainel] = useState<PainelDoCardapio | null>(null);
   const [erro, setErro] = useState<string | null>(null);
   const [carregando, setCarregando] = useState(true);
+  /** A régua gravada e o que está sendo digitado, separados, como em Mesas. */
+  const [regua, setRegua] = useState("");
+  const [problemaDaRegua, setProblemaDaRegua] = useState<string | null>(null);
+  const [avisoDaRegua, setAvisoDaRegua] = useState<string | null>(null);
+  const [gravandoRegua, setGravandoRegua] = useState(false);
 
   const carregar = useCallback(() => {
     if (!gestor) return;
@@ -41,12 +58,44 @@ export default function AdminPainel() {
     setErro(null);
     source
       .rpc("admin_menu_panel", { p_store_id: loja.store_id, p_business_date: turno })
-      .then((r) => setPainel(lerPainel(r)))
+      .then((r) => {
+        const lido = lerPainel(r);
+        setPainel(lido);
+        // O campo sempre volta ao que está gravado: quem manda na régua é o banco, e um
+        // número digitado e não gravado não pode parecer valer.
+        setRegua(String(porcentagemDaRegua(lido.rules)));
+        setProblemaDaRegua(null);
+      })
       .catch((e: unknown) => setErro(mensagemDe(e)))
       .finally(() => setCarregando(false));
   }, [source, loja.store_id, turno, gestor]);
 
   useEffect(carregar, [carregar]);
+
+  /**
+   * Grava a régua da casa e relê o painel, para o dono ver a lista mudar. A faixa é
+   * conferida aqui só para não ir ao servidor com número impossível; quem recusa de
+   * verdade é `admin_update_store_menu_panel_rule`, com JM422, e depois dela o CHECK.
+   */
+  async function gravarRegua() {
+    const leitura = lerRegua(regua);
+    if (!leitura.ok) {
+      setProblemaDaRegua(leitura.problema);
+      return;
+    }
+    setProblemaDaRegua(null);
+    setAvisoDaRegua(null);
+    setGravandoRegua(true);
+    try {
+      await source.rpc("admin_update_store_menu_panel_rule", { p_store_id: loja.store_id, p_pct: leitura.pct });
+      setAvisoDaRegua(`Régua gravada em ${leitura.pct}%. Ela vale para todos os turnos que você abrir aqui.`);
+      carregar();
+    } catch (e: unknown) {
+      setAvisoDaRegua(mensagemDe(e));
+    } finally {
+      setGravandoRegua(false);
+    }
+  }
 
   if (!gestor) {
     return (
@@ -144,19 +193,30 @@ export default function AdminPainel() {
             </Panel>
           ) : (
             <>
+              <Destaques linhas={painel.deserve_highlight} />
+
+              <ReguaDaCasa
+                painel={painel}
+                valor={regua}
+                problema={problemaDaRegua}
+                aviso={avisoDaRegua}
+                gravando={gravandoRegua}
+                onMudar={(v) => {
+                  setRegua(v);
+                  setProblemaDaRegua(null);
+                }}
+                onGravar={() => void gravarRegua()}
+              />
+
               <Lista
                 titulo="Nunca vistos"
-                descricao="Ninguém abriu a tela com estes produtos neste turno. Vale rever a posição deles na categoria, a foto e o nome."
+                descricao="Ninguém abriu a tela com estes produtos neste turno, e nenhum deles foi pedido. Vale rever a posição na categoria, a foto e o nome."
                 vazio="Todo produto do cardápio apareceu para alguém neste turno."
                 linhas={painel.never_seen}
               />
               <Lista
                 titulo="Pouco vistos"
-                descricao={
-                  painel.rules.low_view_max === null
-                    ? "Produtos bem abaixo do resto em número de visualizações."
-                    : `Produtos vistos no máximo ${numero.format(painel.rules.low_view_max)} vez(es), um quarto da mediana do turno (${numero.format(painel.rules.median_impressions ?? 0)}). A régua é relativa ao próprio turno, para valer na casa cheia e na vazia.`
-                }
+                descricao={'Apareceram na tela abaixo da régua da casa, logo acima, e nenhum deles foi pedido. Quem aparece pouco mas vende não entra aqui: está em "Merece destaque".'}
                 vazio="Nenhum produto ficou claramente abaixo do resto neste turno."
                 linhas={painel.low_seen}
               />
@@ -190,6 +250,140 @@ function Total({ rotulo, valor }: { rotulo: string; valor: number }) {
       <dt className="text-muted text-sm">{rotulo}</dt>
       <dd className="text-2xl font-bold tabular-nums">{numero.format(valor)}</dd>
     </div>
+  );
+}
+
+/**
+ * Merece destaque. Cartão, e não linha de tabela, porque esta lista é lida no celular
+ * entre uma mesa e outra: o que ela precisa entregar é a frase ("pedido 5 vezes em apenas
+ * 6 aparições"), e não oito colunas de número para o dono comparar de cabeça.
+ */
+function Destaques({ linhas }: { linhas: LinhaDoPainel[] }) {
+  const algumSemRegistro = linhas.some((l) => l.impressions === 0);
+
+  return (
+    <Panel
+      titulo={`Merece destaque · ${numero.format(linhas.length)}`}
+      descricao="Vende e quase não aparece na tela do cliente. É a única lista que pede para subir o produto, e não para rever ou tirar."
+    >
+      {linhas.length === 0 ? (
+        <p className="text-base">
+          Nenhum produto está vendendo escondido neste turno: o que a casa vende está aparecendo na tela. Isso é boa
+          notícia, e não falta de dado.
+        </p>
+      ) : (
+        <>
+          <ul className="grid gap-3 sm:grid-cols-2">
+            {linhas.map((l) => {
+              const { frase, semRegistro } = lerDestaque(l);
+              return (
+                <li key={l.product_id} className="rounded-input bg-canvas p-4">
+                  <p className="text-base font-bold">{l.name}</p>
+                  <p className="text-muted mt-0.5 text-sm">{l.category}</p>
+                  <p className="mt-3 text-base">{frase}</p>
+                  <p className="text-muted mt-2 text-sm">
+                    Considere subir no cardápio: um lugar mais alto na categoria, ou marcado como destaque.
+                  </p>
+                  <div className="mt-3 flex flex-wrap gap-2">
+                    {l.in_menu ? null : <Badge tom="alerta">fora do cardápio</Badge>}
+                    {semRegistro ? (
+                      <Badge>sem registro de aparição</Badge>
+                    ) : (
+                      <Badge tom="ok">{rotuloDeConversao(l.conversion)} de quem viu pediu</Badge>
+                    )}
+                  </div>
+                </li>
+              );
+            })}
+          </ul>
+          {algumSemRegistro ? (
+            <div className="mt-4">
+              <Hint>
+                <strong>Produto pedido sem nenhuma aparição registrada não tem conversão para mostrar.</strong> Hoje todo
+                pedido passa pelo tablet da mesa, então isso costuma ser o registro que se perdeu quando o aparelho ficou
+                sem rede — mas o pedido aconteceu. Por isso o produto aparece aqui, e não em &ldquo;nunca vistos&rdquo;.
+              </Hint>
+            </div>
+          ) : null}
+        </>
+      )}
+    </Panel>
+  );
+}
+
+/**
+ * A régua da casa (decisão do PO em 24/09/2026). O dono muda a porcentagem aqui e o painel
+ * é relido, então a lista muda na frente dele.
+ *
+ * A tela não simula o número antes de gravar de propósito: quem separa "pouco visto" de
+ * "merece destaque" é a function, e uma segunda conta em JavaScript poderia mostrar um
+ * efeito diferente do que a lista logo abaixo está mostrando.
+ */
+function ReguaDaCasa({
+  painel,
+  valor,
+  problema,
+  aviso,
+  gravando,
+  onMudar,
+  onGravar,
+}: {
+  painel: PainelDoCardapio;
+  valor: string;
+  problema: string | null;
+  aviso: string | null;
+  gravando: boolean;
+  onMudar: (v: string) => void;
+  onGravar: () => void;
+}) {
+  const gravada = porcentagemDaRegua(painel.rules);
+
+  return (
+    <Panel
+      titulo="A régua da casa"
+      descricao="A partir de quantas aparições um produto deixa de contar como pouco visto. O que é pouco numa casa de dez mesas não é pouco numa de cem."
+    >
+      <p className="text-base">{rotuloDaRegua(painel.rules)}</p>
+      <p className="text-muted mt-2 text-sm">
+        A régua é comparada com a mediana do próprio turno, e por isso continua valendo na casa cheia e na vazia. Ela é
+        um aviso para você: não esconde nada do cliente e não muda o cardápio da mesa.
+      </p>
+
+      <div className="mt-4 grid gap-4 min-[1100px]:grid-cols-[1fr_2fr_auto] min-[1100px]:items-end">
+        <Field
+          rotulo="Porcentagem da mediana"
+          ajuda={`De ${MINIMO_DA_REGUA}% a ${MAXIMO_DA_REGUA}%.`}
+          erro={problema}
+        >
+          <TextInput
+            inputMode="numeric"
+            value={valor}
+            disabled={gravando}
+            aria-label="Porcentagem da régua do painel do cardápio"
+            onChange={(e) => onMudar(e.target.value)}
+          />
+        </Field>
+        <div className="mb-6">
+          <p className="text-base">
+            Hoje a régua está gravada em <strong className="tabular-nums">{numero.format(gravada)}%</strong>.
+          </p>
+          <p className="text-muted mt-1 text-sm">
+            Quanto maior a porcentagem, mais produtos entram nas listas de pouco visto e de merece destaque.
+          </p>
+        </div>
+        <div className="mb-6">
+          <Button onClick={onGravar} disabled={gravando || valor.trim() === String(gravada)}>
+            {gravando ? "Gravando…" : "Gravar régua"}
+          </Button>
+        </div>
+      </div>
+
+      {aviso ? (
+        <div role="status">
+          <Hint>{aviso}</Hint>
+        </div>
+      ) : null}
+    </Panel>
   );
 }
 

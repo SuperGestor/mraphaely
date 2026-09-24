@@ -81,8 +81,9 @@ export const MINUTOS_DE_MESA_PARADA_DE_EXEMPLO = 180;
  * em JavaScript é exatamente o que a regra 5 do CLAUDE.md proíbe; uma data fixa deixa claro
  * que este número é de exemplo e mantém o modo de exemplo determinístico.
  *
- * Os números são coerentes com a régua da function: a mediana de impressões dos produtos
- * vistos é 40, então "pouco visto" é até 10 (um quarto) e "campeão" exige ao menos 40.
+ * A régua sai das próprias linhas de exemplo, com a mesma conta da function (mediana das
+ * impressões de quem foi visto, vezes a fração da loja). Escrever a mediana à mão deixaria
+ * o exemplo mentir sozinho assim que alguém mexesse num número de impressão.
  */
 const TURNO_DE_EXEMPLO = "2026-09-22";
 
@@ -113,17 +114,27 @@ const linha = (l: LinhaDeExemplo) => ({
   conversion: l.impressoes > 0 ? Number((l.pedidos / l.impressoes).toFixed(4)) : null,
 });
 
+/**
+ * Merece destaque: vende e quase não aparece. Vem ordenada como a function ordena, pelos
+ * mais vendidos primeiro, e cobre os dois casos que a tela precisa saber contar.
+ *
+ * A caipirinha é o caso comum: apareceu pouco e converteu quase tudo. O negroni é o caso
+ * sem registro de aparição — na Fase B todo pedido passa pelo tablet, então isso é quase
+ * sempre o evento que se perdeu por falta de rede, e a tela não afirma o contrário.
+ */
+const merecemDestaque = [
+  { produto: "22", nome: "Caipirinha de caju", categoria: "Drinks do jardim", impressoes: 6, cliques: 6, sacola: 5, pedidos: 5, quantidade: 7 },
+  { produto: "21", nome: "Negroni de barril", categoria: "Drinks do jardim", no_cardapio: false as const, impressoes: 0, cliques: 0, sacola: 0, pedidos: 2, quantidade: 2 },
+  { produto: "7", nome: "Berinjela do jardim", categoria: "Da horta", impressoes: 9, cliques: 2, sacola: 1, pedidos: 1, quantidade: 1 },
+].map(linha);
+
 const nuncaVistos = [
   { produto: "4", nome: "Queijo coalho na brasa", categoria: "Para começar", impressoes: 0, cliques: 0, sacola: 0, pedidos: 0, quantidade: 0 },
   { produto: "18", nome: "Cerveja sem álcool", categoria: "Chopp e cerveja", impressoes: 0, cliques: 0, sacola: 0, pedidos: 0, quantidade: 0 },
-  // Produto fora do cardápio que ainda teve pedido no turno: o pixel pode ter perdido a
-  // impressão (sem rede, aparelho desligado), e por isso ele aparece aqui com o pedido.
-  { produto: "21", nome: "Negroni de barril", categoria: "Drinks do jardim", no_cardapio: false as const, impressoes: 0, cliques: 0, sacola: 0, pedidos: 2, quantidade: 2 },
 ].map(linha);
 
 const poucoVistos = [
   { produto: "3", nome: "Azeitonas marinadas", categoria: "Para começar", impressoes: 4, cliques: 1, sacola: 0, pedidos: 0, quantidade: 0 },
-  { produto: "7", nome: "Berinjela do jardim", categoria: "Da horta", impressoes: 9, cliques: 2, sacola: 1, pedidos: 1, quantidade: 1 },
 ].map(linha);
 
 const vistosSemConversao = [
@@ -138,8 +149,22 @@ const campeoes = [
   { produto: "19", nome: "Gin da horta", categoria: "Drinks do jardim", impressoes: 82, cliques: 30, sacola: 15, pedidos: 12, quantidade: 14 },
 ].map(linha);
 
-const todas = [...nuncaVistos, ...poucoVistos, ...vistosSemConversao, ...campeoes];
+const todas = [...merecemDestaque, ...nuncaVistos, ...poucoVistos, ...vistosSemConversao, ...campeoes];
 const somar = (campo: "impressions" | "clicks" | "adds_to_cart") => todas.reduce((t, l) => t + l[campo], 0);
+
+/** Fração da loja de exemplo. É o padrão de `stores.menu_panel_low_view_pct`: 25%. */
+const FRACAO_DE_EXEMPLO = 0.25;
+
+/**
+ * Mediana das impressões de quem foi visto, como o `percentile_cont(0.5)` da function faz:
+ * com número par de produtos, o meio entre os dois centrais.
+ */
+const MEDIANA_DE_EXEMPLO = (() => {
+  const vistos = todas.filter((l) => l.impressions > 0).map((l) => l.impressions).sort((a, b) => a - b);
+  if (vistos.length === 0) return null;
+  const meio = vistos.length / 2;
+  return vistos.length % 2 === 1 ? vistos[Math.floor(meio)]! : (vistos[meio - 1]! + vistos[meio]!) / 2;
+})();
 
 export function mockPainelDoCardapio() {
   return {
@@ -150,10 +175,10 @@ export function mockPainelDoCardapio() {
     // futuro, e no exemplo não há turno anterior com dado para visitar.
     next_business_date: null,
     rules: {
-      low_view_fraction: 0.25,
-      median_impressions: 40,
-      low_view_max: 10,
-      champion_min_impressions: 40,
+      low_view_fraction: FRACAO_DE_EXEMPLO,
+      median_impressions: MEDIANA_DE_EXEMPLO,
+      low_view_max: MEDIANA_DE_EXEMPLO === null ? null : MEDIANA_DE_EXEMPLO * FRACAO_DE_EXEMPLO,
+      champion_min_impressions: MEDIANA_DE_EXEMPLO,
       champions_limit: 10,
     },
     totals: {
@@ -164,6 +189,7 @@ export function mockPainelDoCardapio() {
       orders: 97,
       products: todas.length,
     },
+    deserve_highlight: merecemDestaque,
     never_seen: nuncaVistos,
     low_seen: poucoVistos,
     seen_no_conversion: vistosSemConversao,
