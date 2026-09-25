@@ -123,3 +123,43 @@ de NF-012 e o front no Netlify. Três coisas para quem escrever isso:
   o Render não manda cabeçalho, e sem `apikey` a resposta é 401 para sempre;
 - `REALTIME_HOST` e as URLs públicas mudam por ambiente, e staging e produção não
   compartilham nada (NF-012).
+
+## O que foi verificado, em 25/09/2026
+
+As duas imagens foram construídas e executadas nesta máquina, com Docker. O que segue tem
+saída de comando por trás; o que não está aqui **não foi verificado**.
+
+**A imagem do banco (`render/db`)**
+
+| Verificação | Resultado |
+|---|---|
+| `docker build` | ok |
+| Sobe com UM disco só, montado em `/var/lib/postgresql/data` | `accepting connections` |
+| Os três `.sql` assados rodam na criação | `99-jwt.sql`, `99-roles.sql` e `99-realtime.sql` no log, sem erro |
+| O banco nasce completo | 5 schemas (`auth`, `storage`, `graphql_public`, `realtime`, `_realtime`) e 6 papéis |
+| A chave do pgsodium vira link para dentro do disco | `-> /var/lib/postgresql/data/pgsodium_root.key` |
+| **Contêiner NOVO sobre o MESMO disco**, que é o que um deploy do Render faz | a chave continua a mesma (sha idêntico) e o dado escrito antes do "deploy" está lá |
+
+Esse último é o que importa: com a imagem original do Supabase a chave era regerada
+diferente a cada contêiner novo. Hoje isso não quebra nada, porque nada no schema é cifrado
+— mas no dia em que alguém usar o Vault, perder a chave perde o dado, e ninguém vai lembrar
+desta conversa.
+
+**A imagem do Kong (`render/kong`)**
+
+Testada com hostnames **diferentes** dos padrões do compose, que é exatamente o caso do
+Render: `AUTH_HOST=jardim-staging-auth`, `REST_HOST=jardim-staging-rest`,
+`STORAGE_HOST=jardim-staging-storage`.
+
+| Verificação | Resultado |
+|---|---|
+| `docker build` | ok |
+| Sobe e fica saudável | `Up (healthy)` |
+| O `kong.yml` expandido usa os nomes novos | `http://jardim-staging-auth:9999/…`, `http://jardim-staging-rest:3000/` |
+| A API responde por ele | `/rest/v1/` 200, `/auth/v1/health` 200 |
+| A regra 2 continua valendo | `anon` tentando inserir mesa: recusado pela RLS, HTTP 401 |
+
+**O que NÃO foi verificado, e só a conta do Render prova:** o blueprint em si (campos,
+nomes internos da rede privada, disco, health check), o nome do tenant do Realtime no
+subdomínio, e o comportamento do deploy com disco (que derruba o serviço por alguns
+instantes).
