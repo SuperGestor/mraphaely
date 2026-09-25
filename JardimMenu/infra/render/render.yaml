@@ -1,0 +1,983 @@
+# Jardim Menu no Render: os sete serviços da pilha, nos DOIS ambientes (NF-012).
+#
+# Decisão de 24/09/2026: a pilha do Supabase vai para o Render, em contêineres, e o front
+# vai para o Netlify (infra/render/NETLIFY.md). Este arquivo NÃO substitui o
+# infra/docker-compose.yml, que continua sendo o que roda na máquina de quem desenvolve e
+# na esteira. Ele traduz aquele compose para o que o Render entende.
+#
+# O passo a passo de quem vai criar isto pela primeira vez está em infra/render/AMBIENTE.md.
+# NÃO tente subir só com este arquivo: há três coisas que precisam existir ANTES do
+# primeiro sync (os grupos de variáveis) e cinco que só podem ser preenchidas DEPOIS do
+# primeiro deploy do banco (as URLs de conexão). O AMBIENTE.md diz quais e em que ordem.
+#
+# ---------------------------------------------------------------------------------------
+# ONDE ESTE ARQUIVO MORA
+# ---------------------------------------------------------------------------------------
+# Ele NÃO está na raiz do repositório, e isso é permitido: o Render aceita caminho e nome
+# de arquivo próprios para o blueprint, informados no campo "Blueprint Path" na criação (e
+# editáveis depois, em Settings). O caminho a informar é, a partir da raiz do repositório:
+#
+#     JardimMenu/infra/render/render.yaml
+#
+# ---------------------------------------------------------------------------------------
+# O QUE O RENDER NÃO FAZ, E O QUE ISSO OBRIGA AQUI
+# ---------------------------------------------------------------------------------------
+#   1. NÃO roda `docker compose`: cada contêiner do compose virou um serviço aqui embaixo.
+#      Não existe `depends_on`; todos sobem em paralelo e os que falam com o banco entram
+#      em laço de reinício até ele aceitar conexão. Isso é normal no primeiro deploy.
+#   2. NÃO faz bind mount: os arquivos que o compose montava (os três .sql do banco e o
+#      kong.yml) estão ASSADOS em duas imagens nossas, em infra/render/db e
+#      infra/render/kong. Por isso esses dois serviços são `runtime: docker` e os outros
+#      cinco são `runtime: image`, direto das imagens públicas fixadas no compose.
+#   3. Um serviço tem NO MÁXIMO UM disco. O compose usa dois no banco (db-dados e
+#      db-config); o entrypoint da nossa imagem resolve isso pondo a chave do pgsodium
+#      dentro do disco de dados. O porquê está no cabeçalho de infra/render/db/entrypoint.sh.
+#   4. O Postgres gerenciado do Render NÃO serve (faltam pgtap, pg_graphql e pgsodium, e o
+#      papel não é superusuário). O banco é contêiner nosso, com disco.
+#   5. Private Service não tem endereço público; Web Service tem. Um serviço só é público
+#      nesta pilha: o kong.
+#
+# ---------------------------------------------------------------------------------------
+# OS NOMES INTERNOS: A PARTE QUE MAIS DÁ ERRADO
+# ---------------------------------------------------------------------------------------
+# Na rede privada do Render o nome de um serviço NÃO é o nome que você escreveu aqui: é
+# esse nome mais um sufixo curto sorteado pela plataforma (a documentação mostra
+# `elasticsearch-2j3e:9200`). Ou seja, `jardim-staging-db` NÃO resolve; quem resolve é
+# `jardim-staging-db-XXXX`, e o sufixo só existe depois que o serviço é criado.
+#
+# Por isso TODO endereço interno deste arquivo sai de `fromService: {..., property: host}`,
+# que o Render substitui pelo hostname real no momento do deploy. Nenhum nome interno está
+# escrito à mão aqui, e nenhum deve ser.
+#
+# Onde `fromService` NÃO serve, e por quê: ele devolve um hostname, não uma URL. As três
+# strings de conexão do Postgres (GoTrue, PostgREST e Storage) e a POSTGREST_URL do Storage
+# são um texto só, com esquema, usuário, senha e caminho em volta do host — e o blueprint
+# não sabe concatenar variáveis. Essas quatro ficam `sync: false` e são coladas à mão,
+# UMA VEZ, depois que o banco existe. Cada uma delas traz o modelo exato no comentário.
+#
+# CUIDADO ESPECIAL COM O KONG. O infra/kong/kong.yml usa os destinos internos assim:
+#     ${AUTH_HOST:-auth}  ${REST_HOST:-rest}  ${STORAGE_HOST:-storage}
+#     ${META_HOST:-meta}  $REALTIME_HOST
+# O entrypoint da imagem do Kong confere as variáveis antes de subir, MAS o grep dele só
+# enxerga a forma `$VAR` — as quatro da forma `${VAR:-padrão}` passam batido. Se AUTH_HOST,
+# REST_HOST ou STORAGE_HOST chegar vazia, o Kong sobe SAUDÁVEL, o Render marca o deploy como
+# bem-sucedido, e toda chamada à API morre em DNS tentando falar com `auth`, `rest` e
+# `storage`, que são nomes que só existem no compose. É exatamente o tipo de falha silenciosa
+# que este projeto não aceita: as cinco estão declaradas no serviço do kong, por
+# `fromService`, e nenhuma delas pode ser removida.
+#
+# ---------------------------------------------------------------------------------------
+# OS SEGREDOS: O QUE NÃO ESTÁ NESTE ARQUIVO
+# ---------------------------------------------------------------------------------------
+# Este arquivo é versionado. NENHUM segredo aparece nele. São segredos, e todos saem do
+# infra/scripts/gerar-segredos.mjs (veja o AMBIENTE.md):
+#
+#   POSTGRES_PASSWORD · JWT_SECRET · ANON_KEY · SERVICE_ROLE_KEY · SECRET_KEY_BASE
+#   REALTIME_DB_ENC_KEY · PG_META_CRYPTO_KEY · SMTP_USER · SMTP_PASS
+#
+# O blueprint tem três formas de declarar uma variável sem gravar o valor. Usamos duas:
+#
+#   `sync: false`  — a variável existe, o valor não. O Render pergunta por ele na criação
+#                    do blueprint e guarda no serviço. Usamos para tudo que é de UM serviço
+#                    só, e para as quatro URLs de conexão.
+#
+#   `fromGroup`    — o serviço puxa um grupo de variáveis criado no painel. Usamos para os
+#                    segredos que MAIS DE UM serviço precisa, e a razão é a pior falha
+#                    possível aqui: o mesmo JWT_SECRET é pedido por quatro serviços com
+#                    CINCO nomes diferentes (GOTRUE_JWT_SECRET, PGRST_JWT_SECRET,
+#                    AUTH_JWT_SECRET, API_JWT_SECRET, METRICS_JWT_SECRET). Colar cinco vezes
+#                    é cinco chances de errar um caractere, e um deles errado não derruba
+#                    nada: só faz um pedaço da API recusar token, muito depois, sem dizer
+#                    por quê. Com grupo, cola-se UMA vez.
+#
+#                    ATENÇÃO: a documentação do Render diz, com todas as letras, que uma
+#                    variável de grupo NÃO pode ser `sync: false`. Logo, um grupo declarado
+#                    aqui dentro (em `envVarGroups:`) teria de trazer o valor escrito — o
+#                    que este arquivo não pode ter. Por isso os seis grupos abaixo NÃO são
+#                    declarados neste arquivo: eles são criados à mão no painel, ANTES do
+#                    primeiro sync, e aqui só são referenciados pelo nome. O AMBIENTE.md
+#                    tem os nomes, as chaves de cada um e a ordem.
+#
+#   `generateValue` — NÃO é usado em lugar nenhum desta pilha, de propósito. Ele sorteia um
+#                    valor solto, e nenhum segredo nosso é solto: ANON_KEY e
+#                    SERVICE_ROLE_KEY são JWT HS256 ASSINADOS com o JWT_SECRET (um valor
+#                    sorteado à parte não casaria com nada), e REALTIME_DB_ENC_KEY precisa
+#                    ter exatamente 16 bytes, porque o Realtime cifra a configuração do
+#                    tenant com AES-128. Quem sabe fazer os dois é o gerar-segredos.mjs.
+#
+# ---------------------------------------------------------------------------------------
+# OS DOIS AMBIENTES (NF-012)
+# ---------------------------------------------------------------------------------------
+# Catorze serviços, sete por ambiente, sem nada compartilhado: disco, grupo de variáveis,
+# segredo e endereço público são próprios de cada um.
+#
+# Eles estão em REGIÕES DIFERENTES, e isso é a separação, não capricho: a rede privada do
+# Render liga os serviços do mesmo workspace **e da mesma região**. Em regiões diferentes,
+# o banco de produção simplesmente não é alcançável de dentro do staging — sem depender de
+# configuração que alguém possa desligar sem perceber.
+#
+#   produção → virginia   (a região da lista mais perto do Brasil; é a que atende o tablet)
+#   staging  → ohio       (a latência do staging não importa; a separação importa)
+#
+# O Render tem um recurso melhor para isso, "bloquear tráfego de rede privada entre
+# ambientes", mas ele exige workspace Professional ou acima. Se o PO contratar esse plano,
+# dá para trazer o staging para virginia E ligar o bloqueio. Uma coisa OU a outra — trazer
+# o staging para virginia sem ligar o bloqueio derruba a separação em silêncio.
+#
+# Publicação: staging sai a cada commit, produção sai no braço (`autoDeployTrigger`). Um
+# mesmo blueprint cobre os dois, então uma mudança AQUI é sincronizada nos dois; o que a
+# publicação manual protege é o deploy de código, não a configuração. Se um dia isso
+# incomodar, o caminho é partir este arquivo em dois blueprints (o Render aceita caminho e
+# nome próprios), e não relaxar o autoDeployTrigger.
+#
+# ---------------------------------------------------------------------------------------
+# O QUE NÃO SOBE, E POR QUÊ
+# ---------------------------------------------------------------------------------------
+# O serviço `app` do compose não está aqui: o front vai para o Netlify (NETLIFY.md).
+# Analytics, vector, imgproxy, edge-functions, studio e supavisor continuam fora de
+# propósito, como no compose. O Caddy também não: quem termina TLS é a borda do Render.
+#
+# ---------------------------------------------------------------------------------------
+# O QUE NESTE ARQUIVO NÃO FOI EXECUTADO
+# ---------------------------------------------------------------------------------------
+# Nada daqui rodou: não há conta do Render nesta máquina. Os nomes de campo foram conferidos
+# na documentação do blueprint em 25/09/2026 (type, runtime, rootDir, dockerfilePath,
+# dockerContext, image.url, disk.{name,mountPath,sizeGB}, envVars.{key,value,sync,fromGroup,
+# fromService.{type,name,property}}, healthCheckPath, plan, region, autoDeployTrigger,
+# previews.generation). Os pontos que a documentação NÃO fechou estão marcados, um por um,
+# com a palavra INCERTO no comentário, e repetidos no AMBIENTE.md.
+
+# Sem ambiente de pré-visualização: cada preview levantaria uma pilha inteira do Supabase,
+# com disco e tudo. ("off" entre aspas de propósito: sem elas, YAML pode ler isso como
+# booleano falso, e o campo espera texto.)
+previews:
+  generation: "off"
+
+services:
+  # =======================================================================================
+  # =========================        A M B I E N T E:  STAGING       =======================
+  # =======================================================================================
+
+  # ---------------------------------------------------------------------------------------
+  # db (staging) — Postgres. Private Service: nunca tem endereço público.
+  #
+  # Imagem nossa (infra/render/db), porque os três .sql que o compose monta precisam estar
+  # assados. Sem eles o banco nasce quebrado de três jeitos diferentes, todos descritos no
+  # Dockerfile.
+  # ---------------------------------------------------------------------------------------
+  - type: pserv
+    name: jardim-staging-db
+    runtime: docker
+    region: ohio
+    branch: main
+    # Staging acompanha o main. Produção não (veja lá embaixo).
+    autoDeployTrigger: commit
+    # O banco é o único serviço com estado. 1 vCPU e 2 GB é o menor plano que não obriga a
+    # explicar lentidão depois; vale rever com a medição do piloto.
+    plan: 1c-2g
+
+    # Os três campos de build por Docker. Os CAMINHOS são a partir da raiz do REPOSITÓRIO,
+    # e não desta pasta — o repositório é o SuperGestor e o projeto mora em JardimMenu/.
+    #
+    # rootDir também é o que o Render observa para decidir se um commit mexeu neste serviço.
+    # Apontá-lo para JardimMenu/infra faz o banco ser reconstruído quando a imagem ou os
+    # .sql mudarem, e não a cada commit do front.
+    #
+    # INCERTO: a documentação descreve dockerfilePath e dockerContext como caminhos a partir
+    # da raiz do repositório, mas não diz o que acontece quando rootDir também está definido
+    # (se eles passam a ser relativos a ele). Escrevemos a forma documentada, a partir da
+    # raiz. Se o Render os interpretar a partir do rootDir, o build falha ALTO, dizendo que
+    # não achou o Dockerfile — e aí basta trocar por `render/db/Dockerfile` e `.`. Não há
+    # forma silenciosa de errar isto.
+    rootDir: JardimMenu/infra
+    dockerfilePath: JardimMenu/infra/render/db/Dockerfile
+    dockerContext: JardimMenu/infra
+
+    # O único disco que este serviço pode ter, montado onde o compose monta o db-dados.
+    #
+    # O compose tem um SEGUNDO volume (db-config), que guarda a chave do pgsodium. Aqui ele
+    # não cabe, e é por isso que a nossa imagem tem entrypoint: ele põe a chave dentro deste
+    # mesmo disco, por link simbólico.
+    #
+    # 5 GB é o tamanho inicial. Disco do Render CRESCE mas não encolhe; comece pequeno.
+    # Serviço com disco não escala além de uma instância e fica fora do ar alguns instantes
+    # a cada deploy — é o preço, e no caso de um banco ele teria de ser pago de todo jeito.
+    disk:
+      name: jardim-staging-db-dados
+      mountPath: /var/lib/postgresql/data
+      sizeGB: 5
+
+    envVars:
+      # POSTGRES_PASSWORD e PGPASSWORD, uma vez só, no grupo. O roles.sql lê POSTGRES_PASSWORD
+      # na criação do banco; sem ela os papéis internos ficam sem senha e três serviços
+      # entram em laço de reinício com "password authentication failed".
+      - fromGroup: jardim-staging-banco
+
+      # A porta. O Render descobre sozinho em que porta o serviço atende, e esta variável é
+      # a dica explícita. O Postgres em si continua olhando PGPORT.
+      - key: PORT
+        value: "5432"
+      - key: PGPORT
+        value: "5432"
+      - key: POSTGRES_PORT
+        value: "5432"
+      # Soquete unix que o entrypoint da imagem usa no servidor temporário da criação.
+      - key: POSTGRES_HOST
+        value: /var/run/postgresql
+      - key: PGDATABASE
+        value: postgres
+      - key: POSTGRES_DB
+        value: postgres
+      # Lido pelo postgres/jwt.sql, que grava app.settings.jwt_exp no banco. É o mesmo
+      # número de GOTRUE_JWT_EXP e de PGRST_APP_SETTINGS_JWT_EXP: mude os três juntos.
+      - key: JWT_EXP
+        value: "3600"
+
+    # NÃO definimos PGDATA, e isso é uma escolha. O compose não define, e foi assim que a
+    # imagem foi construída e testada em 25/09/2026 (README desta pasta). O risco conhecido
+    # é do PRIMEIRO deploy: se o disco do Render chegar com um `lost+found` dentro, o initdb
+    # recusa a pasta com "directory /var/lib/postgresql/data exists but is not empty" e o
+    # deploy falha — alto, no log, sem ambiguidade. A saída, se acontecer, é acrescentar
+    #     - key: PGDATA
+    #       value: /var/lib/postgresql/data/pgdata
+    # (o entrypoint da nossa imagem já acompanha o PGDATA sozinho) e conferir se o
+    # postgresql.conf da imagem não fixa `data_directory` no caminho antigo. Só a conta do
+    # Render diz se o disco nasce vazio; está no AMBIENTE.md como o primeiro ponto a olhar.
+
+  # ---------------------------------------------------------------------------------------
+  # auth (staging) — GoTrue, o login da equipe. O tablet NÃO é usuário do Auth.
+  # Imagem pública, a mesma versão fixada no compose.
+  # ---------------------------------------------------------------------------------------
+  - type: pserv
+    name: jardim-staging-auth
+    runtime: image
+    region: ohio
+    plan: 0.5c-512mb
+    image:
+      url: public.ecr.aws/supabase/gotrue:v2.196.0
+    envVars:
+      # GOTRUE_JWT_SECRET (e os outros quatro nomes do mesmo segredo, que aqui sobram sem
+      # fazer mal).
+      - fromGroup: jardim-staging-jwt
+
+      - key: GOTRUE_API_HOST
+        value: 0.0.0.0
+      - key: GOTRUE_API_PORT
+        value: "9999"
+      - key: PORT
+        value: "9999"
+
+      # Endereço público da API, que é a URL do Web Service do kong deste ambiente. Ela só
+      # existe depois que o kong é criado, e `fromService` não devolve endereço público (o
+      # `property: host` é o da rede privada). Por isso vem à mão.
+      # Modelo:  https://jardim-staging-kong.onrender.com
+      - key: API_EXTERNAL_URL
+        sync: false
+      # O compose deriva isto de API_EXTERNAL_URL; aqui não há derivação, então é repetido.
+      # ELE PRECISA SER IGUAL a API_EXTERNAL_URL: é o `iss` dos tokens de usuário.
+      - key: GOTRUE_JWT_ISSUER
+        sync: false
+
+      - key: GOTRUE_DB_DRIVER
+        value: postgres
+      # A string de conexão inteira, à mão, porque o blueprint não concatena o hostname que
+      # `fromService` daria com o resto da URL.
+      # Modelo:  postgres://supabase_auth_admin:<POSTGRES_PASSWORD>@<host interno do db>:5432/postgres
+      # O <host interno do db> está no painel do serviço jardim-staging-db, em Connect →
+      # Internal (é `jardim-staging-db-XXXX`, com o sufixo da plataforma).
+      - key: GOTRUE_DB_DATABASE_URL
+        sync: false
+
+      # Origem do front no Netlify deste ambiente. Modelo: https://<site>.netlify.app
+      - key: GOTRUE_SITE_URL
+        sync: false
+      # Destinos de redirecionamento aceitos. Modelo: https://<site>.netlify.app/**
+      - key: GOTRUE_URI_ALLOW_LIST
+        sync: false
+
+      # Cadastro público FECHADO: quem entra é convidado pelo dono (JM-060..064).
+      - key: GOTRUE_DISABLE_SIGNUP
+        value: "true"
+      - key: GOTRUE_JWT_ADMIN_ROLES
+        value: service_role
+      - key: GOTRUE_JWT_AUD
+        value: authenticated
+      - key: GOTRUE_JWT_DEFAULT_GROUP_NAME
+        value: authenticated
+      - key: GOTRUE_JWT_EXP
+        value: "3600"
+      - key: GOTRUE_EXTERNAL_EMAIL_ENABLED
+        value: "true"
+      - key: GOTRUE_EXTERNAL_ANONYMOUS_USERS_ENABLED
+        value: "false"
+      - key: GOTRUE_MAILER_AUTOCONFIRM
+        value: "false"
+      - key: GOTRUE_EXTERNAL_PHONE_ENABLED
+        value: "false"
+      - key: GOTRUE_SMS_AUTOCONFIRM
+        value: "false"
+
+      # SMTP. Sem ele o convite de usuário não sai (JM-060) — mas o projeto já tem o caminho
+      # de criar acesso sem e-mail, que é o que destrava a primeira subida. Deixe em branco
+      # na criação se ainda não houver SMTP; só GOTRUE_SMTP_PASS é segredo de verdade.
+      - key: GOTRUE_SMTP_ADMIN_EMAIL
+        sync: false
+      - key: GOTRUE_SMTP_HOST
+        sync: false
+      - key: GOTRUE_SMTP_PORT
+        value: "587"
+      - key: GOTRUE_SMTP_USER
+        sync: false
+      - key: GOTRUE_SMTP_PASS
+        sync: false
+      - key: GOTRUE_SMTP_SENDER_NAME
+        value: Jardim Menu
+      - key: GOTRUE_MAILER_URLPATHS_INVITE
+        value: /auth/v1/verify
+      - key: GOTRUE_MAILER_URLPATHS_CONFIRMATION
+        value: /auth/v1/verify
+      - key: GOTRUE_MAILER_URLPATHS_RECOVERY
+        value: /auth/v1/verify
+      - key: GOTRUE_MAILER_URLPATHS_EMAIL_CHANGE
+        value: /auth/v1/verify
+
+  # ---------------------------------------------------------------------------------------
+  # rest (staging) — PostgREST. É por aqui que passam as RPC das functions security definer,
+  # que são o único caminho de escrita do projeto.
+  # ---------------------------------------------------------------------------------------
+  - type: pserv
+    name: jardim-staging-rest
+    runtime: image
+    region: ohio
+    plan: 0.5c-512mb
+    image:
+      url: public.ecr.aws/supabase/postgrest:v16.2
+    envVars:
+      # PGRST_JWT_SECRET.
+      - fromGroup: jardim-staging-jwt
+
+      - key: PORT
+        value: "3000"
+      # Conexão do papel `authenticator`, à mão, pelo mesmo motivo do GoTrue.
+      # Modelo:  postgres://authenticator:<POSTGRES_PASSWORD>@<host interno do db>:5432/postgres
+      - key: PGRST_DB_URI
+        sync: false
+      - key: PGRST_DB_SCHEMAS
+        value: public,graphql_public
+      - key: PGRST_DB_MAX_ROWS
+        value: "1000"
+      - key: PGRST_DB_EXTRA_SEARCH_PATH
+        value: public,extensions
+      - key: PGRST_DB_ANON_ROLE
+        value: anon
+      - key: PGRST_DB_USE_LEGACY_GUCS
+        value: "false"
+      - key: PGRST_APP_SETTINGS_JWT_EXP
+        value: "3600"
+      # Servidor administrativo só no localhost do contêiner: ele não pede autenticação.
+      - key: PGRST_ADMIN_SERVER_PORT
+        value: "3001"
+      - key: PGRST_ADMIN_SERVER_HOST
+        value: localhost
+
+  # ---------------------------------------------------------------------------------------
+  # realtime (staging) — só as telas de equipe assinam. O tablet faz polling de 10s.
+  #
+  # AQUI ESTÁ O PONTO MAIS DELICADO DA PILHA INTEIRA, e ele tem solução.
+  #
+  # O Realtime é multi-tenant: ele tira o id do tenant do HOST da requisição. No compose o
+  # contêiner se chama `realtime-dev.<projeto>`, o Kong (que não preserva o Host do cliente)
+  # manda esse nome no cabeçalho Host, e o Realtime lê o primeiro rótulo — `realtime-dev` —
+  # que é justamente o tenant que o SEED_SELF_HOST cria.
+  #
+  # No Render o nome interno é um rótulo só, SEM ponto: `jardim-staging-realtime-XXXX`. Duas
+  # coisas fecham o problema, e as duas foram lidas no código da versão v2.130.0, a mesma
+  # fixada no compose:
+  #
+  #   1. `Realtime.Database.get_external_id/1` faz `String.split(host, ".", parts: 2)` e
+  #      devolve `{:ok, id}` TAMBÉM quando não há ponto nenhum — ou seja, com o hostname do
+  #      Render ele devolve o hostname inteiro. Não é um caso de erro.
+  #   2. o nome do tenant que o seed cria NÃO é fixo: `priv/repo/seeds.exs` faz
+  #      `System.get_env("SELF_HOST_TENANT_NAME", "realtime-dev")`.
+  #
+  # Então basta o tenant se chamar exatamente como o hostname interno deste serviço, e é
+  # isso que a variável abaixo faz. Não é preciso mexer no kong.yml nem inventar domínio.
+  # ---------------------------------------------------------------------------------------
+  - type: pserv
+    name: jardim-staging-realtime
+    runtime: image
+    region: ohio
+    plan: 0.5c-512mb
+    image:
+      url: public.ecr.aws/supabase/realtime:v2.130.0
+    envVars:
+      # API_JWT_SECRET e METRICS_JWT_SECRET.
+      - fromGroup: jardim-staging-jwt
+      # DB_PASSWORD.
+      - fromGroup: jardim-staging-banco
+
+      - key: PORT
+        value: "4000"
+
+      # O Realtime é o único serviço que fala com o banco por campos separados, então aqui
+      # o hostname vem resolvido pela plataforma — sem nada para colar à mão.
+      - key: DB_HOST
+        fromService:
+          type: pserv
+          name: jardim-staging-db
+          property: host
+      - key: DB_PORT
+        value: "5432"
+      - key: DB_USER
+        value: supabase_admin
+      - key: DB_NAME
+        value: postgres
+      - key: DB_AFTER_CONNECT_QUERY
+        value: SET search_path TO _realtime
+
+      # O nome do tenant. Ele PRECISA ser igual ao Host que o Kong manda, que é o hostname
+      # interno deste próprio serviço.
+      #
+      # INCERTO: a documentação do blueprint não diz se um serviço pode referenciar a si
+      # mesmo em `fromService`. Se o sync for recusado por causa disto (o erro aponta o
+      # campo; não há como passar despercebido), troque este bloco por `sync: false` e cole
+      # o hostname interno que aparece em Connect → Internal deste serviço. O AMBIENTE.md
+      # traz o comando que prova que o tenant está certo, e é rápido.
+      #
+      # ATENÇÃO ao trocar depois: o seed roda na subida. Mudar este valor com o banco já de
+      # pé cria um SEGUNDO tenant em vez de renomear o primeiro. Não quebra nada, mas o
+      # tenant velho fica lá.
+      - key: SELF_HOST_TENANT_NAME
+        fromService:
+          type: pserv
+          name: jardim-staging-realtime
+          property: host
+
+      # Cifra a configuração do tenant com AES-128: exatamente 16 bytes, nem mais nem menos.
+      # Sai de REALTIME_DB_ENC_KEY no gerar-segredos.mjs.
+      - key: DB_ENC_KEY
+        sync: false
+      # Sai de SECRET_KEY_BASE no gerar-segredos.mjs.
+      - key: SECRET_KEY_BASE
+        sync: false
+
+      - key: ERL_AFLAGS
+        value: "-proto_dist inet_tcp"
+      # Uma instância só: sem descoberta de nós. As aspas duplas fazem parte do valor, como
+      # no compose.
+      - key: DNS_NODES
+        value: "''"
+      - key: RLIMIT_NOFILE
+        value: "10000"
+      - key: APP_NAME
+        value: realtime
+      - key: SEED_SELF_HOST
+        value: "true"
+      - key: RUN_JANITOR
+        value: "true"
+      - key: DISABLE_HEALTHCHECK_LOGGING
+        value: "true"
+
+  # ---------------------------------------------------------------------------------------
+  # storage (staging) — fotos do cardápio, em disco. Sem imgproxy: as três larguras já saem
+  # prontas do upload, geradas com sharp no back/.
+  # ---------------------------------------------------------------------------------------
+  - type: pserv
+    name: jardim-staging-storage
+    runtime: image
+    region: ohio
+    plan: 0.5c-512mb
+    image:
+      url: public.ecr.aws/supabase/storage-api:v1.72.1
+    # O segundo e último disco da pilha, no mesmo ponto de montagem do compose.
+    disk:
+      name: jardim-staging-storage-arquivos
+      mountPath: /var/lib/storage
+      sizeGB: 5
+    envVars:
+      # AUTH_JWT_SECRET.
+      - fromGroup: jardim-staging-jwt
+      # ANON_KEY e SERVICE_KEY (os nomes que ESTE serviço usa estão no grupo junto com os
+      # dois nomes que o Kong usa; é o mesmo par de chaves).
+      - fromGroup: jardim-staging-chaves
+
+      - key: PORT
+        value: "5000"
+      # Conexão do papel do Storage, à mão.
+      # Modelo:  postgres://supabase_storage_admin:<POSTGRES_PASSWORD>@<host interno do db>:5432/postgres
+      - key: DATABASE_URL
+        sync: false
+      # URL interna do PostgREST. É uma URL, então `fromService` não serve; o hostname a
+      # usar é o de Connect → Internal do serviço jardim-staging-rest.
+      # Modelo:  http://<host interno do rest>:3000
+      - key: POSTGREST_URL
+        sync: false
+      # Endereço público da API (o mesmo valor de API_EXTERNAL_URL do GoTrue). É o que entra
+      # na URL pública de cada foto.
+      - key: STORAGE_PUBLIC_URL
+        sync: false
+
+      - key: REQUEST_ALLOW_X_FORWARDED_PATH
+        value: "true"
+      - key: FILE_SIZE_LIMIT
+        value: "52428800"
+      - key: STORAGE_BACKEND
+        value: file
+      - key: FILE_STORAGE_BACKEND_PATH
+        value: /var/lib/storage
+      # Só existe porque a imagem exige a variável; não há S3 nesta pilha.
+      - key: GLOBAL_S3_BUCKET
+        value: stub
+      - key: TENANT_ID
+        value: jardim-staging
+      - key: REGION
+        value: local
+      # Desligado de propósito: transform exigiria o imgproxy, que ficou de fora.
+      - key: ENABLE_IMAGE_TRANSFORMATION
+        value: "false"
+
+  # ---------------------------------------------------------------------------------------
+  # meta (staging) — postgres-meta, usado pelo `supabase gen types`. Não tem rota no Kong: ele
+  # fica só na rede privada, porque publicar /pg/ daria leitura do schema inteiro (NF-006).
+  # ---------------------------------------------------------------------------------------
+  - type: pserv
+    name: jardim-staging-meta
+    runtime: image
+    region: ohio
+    plan: 0.5c-512mb
+    image:
+      url: public.ecr.aws/supabase/postgres-meta:v0.99.0
+    envVars:
+      # PG_META_DB_PASSWORD.
+      - fromGroup: jardim-staging-banco
+
+      - key: PORT
+        value: "8080"
+      - key: PG_META_PORT
+        value: "8080"
+      - key: PG_META_DB_HOST
+        fromService:
+          type: pserv
+          name: jardim-staging-db
+          property: host
+      - key: PG_META_DB_PORT
+        value: "5432"
+      - key: PG_META_DB_NAME
+        value: postgres
+      - key: PG_META_DB_USER
+        value: postgres
+      # Sai de PG_META_CRYPTO_KEY no gerar-segredos.mjs.
+      - key: CRYPTO_KEY
+        sync: false
+
+  # ---------------------------------------------------------------------------------------
+  # kong (staging) — porta de entrada da API. O ÚNICO Web Service, o único com endereço
+  # público. Imagem nossa (infra/render/kong), com o kong.yml assado como modelo.
+  # ---------------------------------------------------------------------------------------
+  - type: web
+    name: jardim-staging-kong
+    runtime: docker
+    region: ohio
+    branch: main
+    autoDeployTrigger: commit
+    plan: 0.5c-512mb
+    rootDir: JardimMenu/infra
+    dockerfilePath: JardimMenu/infra/render/kong/Dockerfile
+    dockerContext: JardimMenu/infra
+
+    # O health check do Render chega SEM cabeçalho: qualquer rota protegida por key-auth
+    # responderia 401 para sempre e o serviço nunca ficaria saudável. Das rotas do kong.yml,
+    # a de storage é a única sem key-auth que devolve 200 num caminho fixo — `/storage/v1/`
+    # tira o prefixo e cai em `/status` do storage-api, que é o mesmo caminho que o
+    # healthcheck do compose usa.
+    #
+    # O preço é explícito: com o storage fora do ar, o kong é marcado como não saudável e o
+    # deploy dele não conclui. É um preço que se paga sabendo — a alternativa é não ter
+    # health check nenhum e descobrir um Kong sem rota só quando o tablet parar.
+    healthCheckPath: /storage/v1/status
+
+    envVars:
+      # SUPABASE_ANON_KEY e SUPABASE_SERVICE_KEY. Sem elas o entrypoint da imagem PARA a
+      # subida, de propósito: uma chave vazia viraria `key:` sem valor no kong.yml e a porta
+      # da API subiria com o controle de acesso em estado que ninguém escolheu.
+      - fromGroup: jardim-staging-chaves
+
+      # OS CINCO NOMES INTERNOS. Leia o aviso do cabeçalho deste arquivo antes de mexer:
+      # o entrypoint NÃO confere os quatro primeiros (eles aparecem no kong.yml na forma
+      # ${VAR:-padrão}, que o grep dele não pega). Faltando um, o Kong sobe saudável e as
+      # chamadas daquele caminho morrem em DNS.
+      - key: AUTH_HOST
+        fromService:
+          type: pserv
+          name: jardim-staging-auth
+          property: host
+      - key: REST_HOST
+        fromService:
+          type: pserv
+          name: jardim-staging-rest
+          property: host
+      - key: STORAGE_HOST
+        fromService:
+          type: pserv
+          name: jardim-staging-storage
+          property: host
+      # META_HOST não é usado hoje (a rota /pg/ está comentada no kong.yml), mas fica
+      # declarado: no dia em que alguém descomentar, já está certo.
+      - key: META_HOST
+        fromService:
+          type: pserv
+          name: jardim-staging-meta
+          property: host
+      - key: REALTIME_HOST
+        fromService:
+          type: pserv
+          name: jardim-staging-realtime
+          property: host
+
+      # Origens de navegador que a API aceita. É o endereço do front no Netlify deste
+      # ambiente; separe por vírgula se houver mais de um.
+      # Modelo:  https://<site>.netlify.app
+      # Vazia, o entrypoint PARA a subida (esta o grep dele pega).
+      - key: CORS_ORIGENS
+        sync: false
+
+      # PORT não é declarado: o Render entrega a porta do Web Service nesta variável (10000,
+      # por padrão) e o entrypoint da imagem monta o KONG_PROXY_LISTEN a partir dela.
+      # Declarar um valor aqui é a maneira de fazer o Kong escutar onde a plataforma não
+      # está olhando.
+
+  # =======================================================================================
+  # =========================      A M B I E N T E:  PRODUÇÃO       =======================
+  # =======================================================================================
+  #
+  # Tudo igual ao staging, com quatro diferenças de propósito, e só elas:
+  #
+  #   1. região virginia, e não ohio. É a separação de rede entre os dois ambientes, e é a
+  #      mais perto do Brasil — é ela que atende o tablet.
+  #   2. `autoDeployTrigger: "off"` nos dois serviços construídos por Docker: produção não
+  #      sai sozinha em commit. O deploy é apertado no braço, depois de o staging passar.
+  #      Os cinco serviços de imagem pública não levam esse campo em ambiente nenhum: eles
+  #      não são construídos de commit, e a versão da imagem está fixada aqui — trocar de
+  #      versão é editar este arquivo, e NF-018 manda isso passar por staging antes.
+  #   3. grupos de variáveis próprios (jardim-producao-*), com segredos próprios. Nenhum
+  #      segredo é compartilhado entre os ambientes; são duas execuções separadas do
+  #      gerar-segredos.mjs.
+  #   4. discos próprios, com nome próprio.
+  #
+  # O nome do serviço é `producao` sem cedilha porque ele vira hostname na rede privada.
+  # =======================================================================================
+
+  # ---------------------------------------------------------------------------------------
+  # db (produção)
+  # ---------------------------------------------------------------------------------------
+  - type: pserv
+    name: jardim-producao-db
+    runtime: docker
+    region: virginia
+    branch: main
+    # Produção não segue commit. ("off" entre aspas: sem elas, YAML pode ler como booleano.)
+    autoDeployTrigger: "off"
+    plan: 1c-2g
+    rootDir: JardimMenu/infra
+    dockerfilePath: JardimMenu/infra/render/db/Dockerfile
+    dockerContext: JardimMenu/infra
+    disk:
+      name: jardim-producao-db-dados
+      mountPath: /var/lib/postgresql/data
+      sizeGB: 5
+    envVars:
+      - fromGroup: jardim-producao-banco
+      - key: PORT
+        value: "5432"
+      - key: PGPORT
+        value: "5432"
+      - key: POSTGRES_PORT
+        value: "5432"
+      - key: POSTGRES_HOST
+        value: /var/run/postgresql
+      - key: PGDATABASE
+        value: postgres
+      - key: POSTGRES_DB
+        value: postgres
+      - key: JWT_EXP
+        value: "3600"
+
+  # ---------------------------------------------------------------------------------------
+  # auth (produção)
+  # ---------------------------------------------------------------------------------------
+  - type: pserv
+    name: jardim-producao-auth
+    runtime: image
+    region: virginia
+    plan: 0.5c-512mb
+    image:
+      url: public.ecr.aws/supabase/gotrue:v2.196.0
+    envVars:
+      - fromGroup: jardim-producao-jwt
+      - key: GOTRUE_API_HOST
+        value: 0.0.0.0
+      - key: GOTRUE_API_PORT
+        value: "9999"
+      - key: PORT
+        value: "9999"
+      # Modelo:  https://jardim-producao-kong.onrender.com
+      - key: API_EXTERNAL_URL
+        sync: false
+      # Igual a API_EXTERNAL_URL.
+      - key: GOTRUE_JWT_ISSUER
+        sync: false
+      - key: GOTRUE_DB_DRIVER
+        value: postgres
+      # Modelo:  postgres://supabase_auth_admin:<POSTGRES_PASSWORD>@<host interno do db>:5432/postgres
+      - key: GOTRUE_DB_DATABASE_URL
+        sync: false
+      - key: GOTRUE_SITE_URL
+        sync: false
+      - key: GOTRUE_URI_ALLOW_LIST
+        sync: false
+      - key: GOTRUE_DISABLE_SIGNUP
+        value: "true"
+      - key: GOTRUE_JWT_ADMIN_ROLES
+        value: service_role
+      - key: GOTRUE_JWT_AUD
+        value: authenticated
+      - key: GOTRUE_JWT_DEFAULT_GROUP_NAME
+        value: authenticated
+      - key: GOTRUE_JWT_EXP
+        value: "3600"
+      - key: GOTRUE_EXTERNAL_EMAIL_ENABLED
+        value: "true"
+      - key: GOTRUE_EXTERNAL_ANONYMOUS_USERS_ENABLED
+        value: "false"
+      - key: GOTRUE_MAILER_AUTOCONFIRM
+        value: "false"
+      - key: GOTRUE_EXTERNAL_PHONE_ENABLED
+        value: "false"
+      - key: GOTRUE_SMS_AUTOCONFIRM
+        value: "false"
+      - key: GOTRUE_SMTP_ADMIN_EMAIL
+        sync: false
+      - key: GOTRUE_SMTP_HOST
+        sync: false
+      - key: GOTRUE_SMTP_PORT
+        value: "587"
+      - key: GOTRUE_SMTP_USER
+        sync: false
+      - key: GOTRUE_SMTP_PASS
+        sync: false
+      - key: GOTRUE_SMTP_SENDER_NAME
+        value: Jardim Menu
+      - key: GOTRUE_MAILER_URLPATHS_INVITE
+        value: /auth/v1/verify
+      - key: GOTRUE_MAILER_URLPATHS_CONFIRMATION
+        value: /auth/v1/verify
+      - key: GOTRUE_MAILER_URLPATHS_RECOVERY
+        value: /auth/v1/verify
+      - key: GOTRUE_MAILER_URLPATHS_EMAIL_CHANGE
+        value: /auth/v1/verify
+
+  # ---------------------------------------------------------------------------------------
+  # rest (produção)
+  # ---------------------------------------------------------------------------------------
+  - type: pserv
+    name: jardim-producao-rest
+    runtime: image
+    region: virginia
+    plan: 0.5c-512mb
+    image:
+      url: public.ecr.aws/supabase/postgrest:v16.2
+    envVars:
+      - fromGroup: jardim-producao-jwt
+      - key: PORT
+        value: "3000"
+      # Modelo:  postgres://authenticator:<POSTGRES_PASSWORD>@<host interno do db>:5432/postgres
+      - key: PGRST_DB_URI
+        sync: false
+      - key: PGRST_DB_SCHEMAS
+        value: public,graphql_public
+      - key: PGRST_DB_MAX_ROWS
+        value: "1000"
+      - key: PGRST_DB_EXTRA_SEARCH_PATH
+        value: public,extensions
+      - key: PGRST_DB_ANON_ROLE
+        value: anon
+      - key: PGRST_DB_USE_LEGACY_GUCS
+        value: "false"
+      - key: PGRST_APP_SETTINGS_JWT_EXP
+        value: "3600"
+      - key: PGRST_ADMIN_SERVER_PORT
+        value: "3001"
+      - key: PGRST_ADMIN_SERVER_HOST
+        value: localhost
+
+  # ---------------------------------------------------------------------------------------
+  # realtime (produção) — o tenant leva o hostname interno DESTE ambiente. Leia o bloco
+  # equivalente do staging: é lá que está o porquê inteiro.
+  # ---------------------------------------------------------------------------------------
+  - type: pserv
+    name: jardim-producao-realtime
+    runtime: image
+    region: virginia
+    plan: 0.5c-512mb
+    image:
+      url: public.ecr.aws/supabase/realtime:v2.130.0
+    envVars:
+      - fromGroup: jardim-producao-jwt
+      - fromGroup: jardim-producao-banco
+      - key: PORT
+        value: "4000"
+      - key: DB_HOST
+        fromService:
+          type: pserv
+          name: jardim-producao-db
+          property: host
+      - key: DB_PORT
+        value: "5432"
+      - key: DB_USER
+        value: supabase_admin
+      - key: DB_NAME
+        value: postgres
+      - key: DB_AFTER_CONNECT_QUERY
+        value: SET search_path TO _realtime
+      # INCERTO: autorreferência em fromService (veja o bloco do staging).
+      - key: SELF_HOST_TENANT_NAME
+        fromService:
+          type: pserv
+          name: jardim-producao-realtime
+          property: host
+      - key: DB_ENC_KEY
+        sync: false
+      - key: SECRET_KEY_BASE
+        sync: false
+      - key: ERL_AFLAGS
+        value: "-proto_dist inet_tcp"
+      - key: DNS_NODES
+        value: "''"
+      - key: RLIMIT_NOFILE
+        value: "10000"
+      - key: APP_NAME
+        value: realtime
+      - key: SEED_SELF_HOST
+        value: "true"
+      - key: RUN_JANITOR
+        value: "true"
+      - key: DISABLE_HEALTHCHECK_LOGGING
+        value: "true"
+
+  # ---------------------------------------------------------------------------------------
+  # storage (produção)
+  # ---------------------------------------------------------------------------------------
+  - type: pserv
+    name: jardim-producao-storage
+    runtime: image
+    region: virginia
+    plan: 0.5c-512mb
+    image:
+      url: public.ecr.aws/supabase/storage-api:v1.72.1
+    disk:
+      name: jardim-producao-storage-arquivos
+      mountPath: /var/lib/storage
+      sizeGB: 5
+    envVars:
+      - fromGroup: jardim-producao-jwt
+      - fromGroup: jardim-producao-chaves
+      - key: PORT
+        value: "5000"
+      # Modelo:  postgres://supabase_storage_admin:<POSTGRES_PASSWORD>@<host interno do db>:5432/postgres
+      - key: DATABASE_URL
+        sync: false
+      # Modelo:  http://<host interno do rest>:3000
+      - key: POSTGREST_URL
+        sync: false
+      - key: STORAGE_PUBLIC_URL
+        sync: false
+      - key: REQUEST_ALLOW_X_FORWARDED_PATH
+        value: "true"
+      - key: FILE_SIZE_LIMIT
+        value: "52428800"
+      - key: STORAGE_BACKEND
+        value: file
+      - key: FILE_STORAGE_BACKEND_PATH
+        value: /var/lib/storage
+      - key: GLOBAL_S3_BUCKET
+        value: stub
+      - key: TENANT_ID
+        value: jardim-producao
+      - key: REGION
+        value: local
+      - key: ENABLE_IMAGE_TRANSFORMATION
+        value: "false"
+
+  # ---------------------------------------------------------------------------------------
+  # meta (produção)
+  # ---------------------------------------------------------------------------------------
+  - type: pserv
+    name: jardim-producao-meta
+    runtime: image
+    region: virginia
+    plan: 0.5c-512mb
+    image:
+      url: public.ecr.aws/supabase/postgres-meta:v0.99.0
+    envVars:
+      - fromGroup: jardim-producao-banco
+      - key: PORT
+        value: "8080"
+      - key: PG_META_PORT
+        value: "8080"
+      - key: PG_META_DB_HOST
+        fromService:
+          type: pserv
+          name: jardim-producao-db
+          property: host
+      - key: PG_META_DB_PORT
+        value: "5432"
+      - key: PG_META_DB_NAME
+        value: postgres
+      - key: PG_META_DB_USER
+        value: postgres
+      - key: CRYPTO_KEY
+        sync: false
+
+  # ---------------------------------------------------------------------------------------
+  # kong (produção) — o único serviço público deste ambiente.
+  # ---------------------------------------------------------------------------------------
+  - type: web
+    name: jardim-producao-kong
+    runtime: docker
+    region: virginia
+    branch: main
+    autoDeployTrigger: "off"
+    plan: 0.5c-512mb
+    rootDir: JardimMenu/infra
+    dockerfilePath: JardimMenu/infra/render/kong/Dockerfile
+    dockerContext: JardimMenu/infra
+    healthCheckPath: /storage/v1/status
+    envVars:
+      - fromGroup: jardim-producao-chaves
+      - key: AUTH_HOST
+        fromService:
+          type: pserv
+          name: jardim-producao-auth
+          property: host
+      - key: REST_HOST
+        fromService:
+          type: pserv
+          name: jardim-producao-rest
+          property: host
+      - key: STORAGE_HOST
+        fromService:
+          type: pserv
+          name: jardim-producao-storage
+          property: host
+      - key: META_HOST
+        fromService:
+          type: pserv
+          name: jardim-producao-meta
+          property: host
+      - key: REALTIME_HOST
+        fromService:
+          type: pserv
+          name: jardim-producao-realtime
+          property: host
+      - key: CORS_ORIGENS
+        sync: false
