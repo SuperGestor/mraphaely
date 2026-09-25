@@ -8,6 +8,13 @@ Esta pasta é autossuficiente: dá para copiá-la sozinha para o servidor. O tex
 para quem vai **operar** está em `docs/operacao/BACKUP.md`; aqui ficam a
 instalação e as opções.
 
+> **No Render** (decisão de 24/09/2026) estes mesmos scripts rodam por outro caminho:
+> `MODO_BANCO=host` para o banco e `MODO_STORAGE=api` para as fotos, porque lá não existe
+> `docker exec` e **Cron Job não enxerga disco nenhum**. O que muda, e o que isso custa,
+> está em `infra/render/OPERACAO.md`, §5 e §6; a configuração está comentada no fim de
+> `exemplo/backup.env.exemplo`. O caminho do compose descrito abaixo continua valendo
+> inteiro, e é o padrão.
+
 ## O que tem aqui
 
 | Arquivo | Para que serve |

@@ -56,13 +56,28 @@ FALHAS_PARA_ALERTAR="${FALHAS_PARA_ALERTAR:-2}"
 MINUTOS_LEMBRETE="${MINUTOS_LEMBRETE:-60}"
 CAMINHO_SAUDE_APP="${CAMINHO_SAUDE_APP:-/api/saude}"
 CAMINHO_SAUDE_API="${CAMINHO_SAUDE_API:-/auth/v1/health}"
+# /storage/v1/status cai no /status do storage-api (o kong.yml usa strip_path). É o mesmo
+# endereço que o healthcheck do compose usa, e funciona de fora, pela internet.
+CAMINHO_SAUDE_STORAGE="${CAMINHO_SAUDE_STORAGE:-/storage/v1/status}"
+# Onde esta pilha roda. Muda o que é verificável e, principalmente, muda o que precisa ser
+# DITO como não verificado:
+#   docker (padrão) — servidor próprio com compose: dá para inspecionar contêiner e disco;
+#   render          — não há docker, não há contêiner para inspecionar e o disco do banco é
+#                     do Render, não desta máquina. Sobra o que responde por HTTP, mais o
+#                     banco quando este script roda dentro da rede privada.
+MODO_PLATAFORMA="${MODO_PLATAFORMA:-docker}"
 # 200 e 204: o /api/saude do app responde 204 (sem corpo, de propósito — ele não toca no
 # banco). Com só 200 na lista, o monitoramento alertaria queda do primeiro minuto em diante,
 # com o app perfeitamente de pé.
 CODIGOS_OK="${CODIGOS_OK:-200 204}"
 LIMITE_DISCO="${LIMITE_DISCO:-85}"
 FOLGA_DISCO="${FOLGA_DISCO:-5}"
-PONTOS_DE_MONTAGEM="${PONTOS_DE_MONTAGEM:-/}"
+# `-` e não `:-`: com `:-` um PONTOS_DE_MONTAGEM="" escrito de propósito na configuração
+# voltaria a valer "/", e não haveria como DESLIGAR a verificação de disco. No Render é
+# preciso desligar: o disco que este script enxerga é o do próprio disparo, descartável e
+# irrelevante, enquanto o disco que importa (o do banco) é do Render e tem alerta dele.
+# Vigiar o disco errado é pior do que não vigiar: dá sensação de cobertura.
+PONTOS_DE_MONTAGEM="${PONTOS_DE_MONTAGEM-/}"
 # De quantas em quantas horas sai o "monitoramento vivo". Sem esse batimento,
 # canal quieto tanto pode ser "está tudo bem" quanto "o monitoramento morreu e
 # ninguém percebeu" — e foi assim que a única rede de proteção virou a frase
@@ -342,11 +357,64 @@ verificar_ambiente() {
     jm_aviso "[$ambiente] ${ambiente^^}_URL_API não configurada: a API não está sendo vigiada."
   fi
 
+  # O Storage tem rota de saúde própria atrás do Kong: /storage/v1/status cai no
+  # /status do storage-api (o kong.yml usa strip_path). Vale a pena separar do
+  # /auth/v1/health porque são serviços diferentes: o Kong pode estar de pé, o auth
+  # respondendo, e o Storage fora — e aí o cardápio abre SEM FOTO NENHUMA, que é uma
+  # queda que o cliente vê na mesa e que o check da API sozinho não pega.
+  local url_storage
+  url_storage="$(jm_var_ambiente "$ambiente" URL_STORAGE "$url_api")"
+  if [ -n "$url_storage" ] && [ "${VERIFICAR_STORAGE:-sim}" = "sim" ]; then
+    codigo="$(codigo_http "${url_storage}${CAMINHO_SAUDE_STORAGE}" "$chave")"
+    if codigo_aceito "$codigo"; then
+      avaliar "${ambiente}-storage" "Storage de ${ambiente}" ok
+    else
+      avaliar "${ambiente}-storage" "Storage de ${ambiente}" falha \
+        "GET ${url_storage}${CAMINHO_SAUDE_STORAGE} $(explicar_codigo "$codigo"). Sem Storage o cardápio abre sem foto."
+    fi
+  fi
+
+  # O banco, quando alcançável. No compose ele é visto pelo contêiner, logo abaixo. No
+  # Render ele é Private Service SEM endereço público: só quem está DENTRO da rede privada
+  # (mesma região, mesmo workspace) o enxerga. Por isso é opcional, e a falta dele é dita
+  # em voz alta no batimento, não escondida.
+  local pg_host pg_porta pg_user pg_db pg_senha
+  pg_host="$(jm_var_ambiente "$ambiente" PG_HOST "")"
+  if [ -n "$pg_host" ]; then
+    if ! command -v psql >/dev/null 2>&1; then
+      # Configurou o banco e não tem cliente: isso é um check que alguém ACHA que tem.
+      # Calar aqui seria vigiar o banco no papel e não vigiar na prática.
+      jm_erro "[$ambiente] ${ambiente^^}_PG_HOST está configurada mas não há psql aqui: o banco NÃO está sendo vigiado."
+    else
+      pg_porta="$(jm_var_ambiente "$ambiente" PG_PORTA "5432")"
+      pg_user="$(jm_var_ambiente "$ambiente" PG_USER "${PG_USER:-supabase_admin}")"
+      pg_db="$(jm_var_ambiente "$ambiente" PG_DB "${PG_DB:-postgres}")"
+      pg_senha="$(jm_var_ambiente "$ambiente" PG_SENHA "")"
+      if PGCONNECT_TIMEOUT="$TIMEOUT_SEGUNDOS" PGPASSWORD="$pg_senha" \
+         psql -Atqc 'select 1' -h "$pg_host" -p "$pg_porta" -U "$pg_user" -d "$pg_db" >/dev/null 2>&1; then
+        avaliar "${ambiente}-banco" "banco de ${ambiente}" ok
+      else
+        avaliar "${ambiente}-banco" "banco de ${ambiente}" falha \
+          "não respondeu 'select 1' em ${pg_host}:${pg_porta}/${pg_db} em ${TIMEOUT_SEGUNDOS}s"
+      fi
+    fi
+  fi
+
   # Contêineres daquele ambiente. O nome sai do compose da frente de
   # infraestrutura, então vem da configuração e não do código.
+  #
+  # ATENÇÃO ao `command -v docker`: até 24/09/2026 a ausência do docker fazia este bloco
+  # inteiro sumir CALADO. Num servidor com compose isso nunca acontecia, então passou
+  # despercebido — mas é exatamente o que acontece no Render, onde não existe docker: a
+  # configuração continuaria listando sete contêineres, o painel continuaria dizendo que
+  # sete itens são vigiados, e nenhum deles seria olhado. Vigilância que não existe e
+  # ninguém sabe é pior do que vigilância nenhuma.
   local lista nome estado_container
   lista="$(jm_var_ambiente "$ambiente" CONTAINERS "")"
-  if [ -n "$lista" ] && command -v docker >/dev/null 2>&1; then
+  if [ -n "$lista" ] && ! command -v docker >/dev/null 2>&1; then
+    jm_erro "[$ambiente] ${ambiente^^}_CONTAINERS lista contêineres mas não há docker aqui: NENHUM deles está sendo vigiado."
+    jm_erro "[$ambiente] No Render não há docker nem contêiner para inspecionar: esvazie ${ambiente^^}_CONTAINERS e use MODO_PLATAFORMA=render."
+  elif [ -n "$lista" ]; then
     for nome in $lista; do
       estado_container="$(docker inspect -f '{{.State.Status}}' "$nome" 2>/dev/null || echo 'inexistente')"
       if [ "$estado_container" = "running" ]; then
@@ -395,7 +463,7 @@ verificar_disco() {
 batimento() {
   [ "$BATIMENTO_HORAS" -gt 0 ] || return 0
 
-  local arq="$DIR_ESTADO/.batimento" ultimo agora arquivo fora=0
+  local arq="$DIR_ESTADO/.batimento" ultimo agora arquivo fora=0 amb
   agora="$(date +%s)"
   ultimo="$(cat "$arq" 2>/dev/null || echo 0)"
   [ $(( agora - ultimo )) -ge $(( BATIMENTO_HORAS * 3600 )) ] || return 0
@@ -409,9 +477,34 @@ batimento() {
     fi
   done
 
+  # O batimento diz também O QUE NÃO ESTÁ SENDO OLHADO. É a parte que importa no Render:
+  # lá caíram por terra o check de contêiner e o de disco, e um canal que só repete
+  # "monitoramento vivo" faz a equipe acreditar numa cobertura que não existe mais. Quem lê
+  # isto no celular precisa saber onde ainda tem de olhar com o olho.
+  local nao_vejo=""
+  if [ "$MODO_PLATAFORMA" = "render" ]; then
+    nao_vejo="${nao_vejo}
+- contêineres: não há docker no Render. Quem reinicia serviço caído é o próprio Render, e é no painel dele que isso aparece."
+    nao_vejo="${nao_vejo}
+- disco do banco: é disco do Render, não desta máquina. O alerta de disco cheio é do painel do Render — confira que ele está ligado."
+    local amb_sem_banco=""
+    for amb in $AMBIENTES; do
+      if [ -z "$(jm_var_ambiente "$amb" PG_HOST "")" ]; then amb_sem_banco="$amb_sem_banco $amb"; fi
+    done
+    if [ -n "$amb_sem_banco" ]; then
+      nao_vejo="${nao_vejo}
+- banco de:${amb_sem_banco} — é Private Service, sem endereço público. Só é visto de dentro da rede privada, e este monitoramento está de fora. O que se sabe dele é indireto: se a API responde, ele está de pé."
+    fi
+  fi
+  if [ -z "$PONTOS_DE_MONTAGEM" ]; then
+    nao_vejo="${nao_vejo}
+- disco: PONTOS_DE_MONTAGEM está vazio, então nenhum disco é verificado por este script."
+  fi
+
   enfileirar "$(printf '%s\n' \
     "Jardim Menu — monitoramento vivo." \
     "${ITENS_VERIFICADOS} verificações nesta rodada, ${fora} item(ns) fora do ar agora." \
+    "${nao_vejo:+O que este monitoramento NÃO vê:}${nao_vejo}" \
     "Esta mensagem sai a cada ${BATIMENTO_HORAS}h. Se ela faltar, o monitoramento é que caiu.")" \
     "batimento|-|$agora"
 }

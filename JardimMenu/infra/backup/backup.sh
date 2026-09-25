@@ -78,7 +78,45 @@ RCLONE_REMOTO="${RCLONE_REMOTO:-}"
 RCLONE_CONFIG="${RCLONE_CONFIG:-/etc/jardim-menu/rclone.conf}"
 RCLONE_OPCOES="${RCLONE_OPCOES:---transfers 4 --retries 3 --low-level-retries 10}"
 
+# O disco de onde este script roda é descartável? No Render é: Cron Job NÃO pode ter disco,
+# então DIR_BACKUP vive num sistema de arquivos que morre junto com o disparo. Isso muda
+# duas coisas de verdade, e é por isso que precisa ser declarado em vez de adivinhado:
+#   - a cópia externa deixa de ser a segunda via e passa a ser a ÚNICA. Rodada sem ela não
+#     guardou nada em lugar nenhum, e terminar com "backup em dia" seria mentira;
+#   - a retenção local e o piso de MINIMO_DUMPS_MANTIDOS não protegem coisa alguma: não há
+#     arquivo de ontem para proteger.
+ARMAZENAMENTO_LOCAL_EFEMERO="${ARMAZENAMENTO_LOCAL_EFEMERO:-nao}"
+
 jm_exige_comandos curl tar find date awk flock sha256sum gzip
+
+# Em MODO_BANCO=host quem dumpa é o cliente instalado aqui, e ele precisa existir e ser
+# pelo menos da versão do servidor. Conferido ANTES da trava e de qualquer dump: no Render
+# a imagem do Cron Job é montada por nós, e faltar postgresql-client é o tropeço da estreia.
+PRECISA_CLIENTE_PG=nao
+for ambiente_conf in $AMBIENTES; do
+  if [ "$(jm_var_ambiente "$ambiente_conf" MODO_BANCO "${MODO_BANCO:-docker}")" = "host" ]; then
+    PRECISA_CLIENTE_PG=sim
+  fi
+done
+if [ "$PRECISA_CLIENTE_PG" = "sim" ]; then
+  jm_exige_cliente_pg psql pg_dump pg_dumpall pg_restore \
+    || { jm_erro "MODO_BANCO=host exige o cliente do Postgres aqui dentro."; exit 2; }
+fi
+
+# --sem-remoto com disco descartável é uma rodada que não guarda nada, e sai com 0. É
+# exatamente a falha silenciosa que este projeto trata como a pior possível.
+if [ "$ARMAZENAMENTO_LOCAL_EFEMERO" = "sim" ]; then
+  if [ "$SEM_REMOTO" = "sim" ]; then
+    jm_erro "--sem-remoto com ARMAZENAMENTO_LOCAL_EFEMERO=sim: o disco daqui morre com o"
+    jm_erro "disparo, então esta rodada não guardaria o backup em lugar NENHUM."
+    exit 2
+  fi
+  if [ -z "$RCLONE_REMOTO" ]; then
+    jm_erro "RCLONE_REMOTO vazio com ARMAZENAMENTO_LOCAL_EFEMERO=sim: sem destino externo,"
+    jm_erro "o backup seria escrito num disco que some no fim do disparo. Nada foi feito."
+    exit 2
+  fi
+fi
 
 # Número quebrado na configuração não pode derrubar a rodada nem, pior, virar retenção
 # sem piso: corrige e diz em voz alta o que corrigiu.
@@ -303,38 +341,136 @@ dump_globais() {
   jm_log "[$ambiente] papéis guardados: $(jm_tamanho "$destino")"
 }
 
-# Fotos do Storage. Dois caminhos, porque ainda não sabemos como a frente de
-# infraestrutura vai montar o volume:
-#  - <AMB>_DIR_STORAGE: caminho no host (o volume montado). Mais simples.
-#  - <AMB>_CONTAINER_STORAGE + <AMB>_CAMINHO_STORAGE: tar de dentro do contêiner.
+# Fotos do Storage. TRÊS caminhos, escolhidos por jm_modo_storage (lib/comum.sh):
+#  - host:   <AMB>_DIR_STORAGE, caminho no host (o volume montado). Mais simples.
+#  - docker: <AMB>_CONTAINER_STORAGE + <AMB>_CAMINHO_STORAGE, tar de dentro do contêiner.
+#  - api:    <AMB>_STORAGE_URL + <AMB>_STORAGE_BUCKET + <AMB>_SERVICE_KEY, por HTTP.
+#
+# O modo `api` nasceu do Render, onde nenhum dos dois primeiros existe: Cron Job não
+# enxerga disco e não há `docker exec`. O padrão continua sendo `auto`, que escolhe entre
+# host e docker exatamente como antes — a máquina de quem desenvolve e a esteira não mudam.
+#
+# O TAR DO MODO api TEM OUTRO FORMATO, de propósito, e isso precisa ficar dito em voz alta:
+# ele tem <bucket>/<caminho-do-objeto>, montado a partir da lista do banco, e NÃO é uma
+# cópia da árvore de /var/lib/storage (que pode ter prefixo de tenant, arquivo de controle
+# e o que mais o storage-api resolver guardar lá). Extrair um por cima do outro devolveria
+# fotos em lugar errado, em silêncio. Por isso vai um marcador na raiz do tar, e é ele que
+# o restaurar.sh lê para recusar a troca em vez de adivinhar.
 dump_storage() {
   local ambiente="$1" destino="$2"
-  local dir container caminho
+  local modo dir container caminho
+  modo="$(jm_modo_storage "$ambiente")"
   dir="$(jm_var_ambiente "$ambiente" DIR_STORAGE "")"
   container="$(jm_var_ambiente "$ambiente" CONTAINER_STORAGE "")"
   caminho="$(jm_var_ambiente "$ambiente" CAMINHO_STORAGE "/var/lib/storage")"
 
-  if [ -n "$dir" ] && [ -d "$dir" ]; then
-    jm_log "[$ambiente] fotos do Storage a partir do host: $dir"
-    if [ "$SIMULAR" = "sim" ]; then return 0; fi
-    tar -C "$dir" -czf "${destino}.parcial" . \
-      || { rm -f "${destino}.parcial"; return 1; }
-  elif [ -n "$container" ]; then
-    jm_log "[$ambiente] fotos do Storage de dentro do contêiner $container:$caminho"
-    if [ "$SIMULAR" = "sim" ]; then return 0; fi
-    docker exec -i "$container" tar -C "$caminho" -cf - . | gzip -6 > "${destino}.parcial" \
-      || { rm -f "${destino}.parcial"; return 1; }
-  else
-    # Falha, e não aviso. Foto perdida é trabalho do gestor perdido, e ela não está dentro
-    # do dump do banco: uma rodada sem as fotos não é um backup completo, e declarar sucesso
-    # faz a casa acreditar que está protegida. Quem quiser mesmo só o banco tem
-    # --somente-banco, que é explícito e não passa por aqui.
-    jm_erro "[$ambiente] Storage não configurado (${ambiente^^}_DIR_STORAGE ou ${ambiente^^}_CONTAINER_STORAGE). As fotos NÃO entraram neste backup."
-    return 1
-  fi
+  case "$modo" in
+    host)
+      jm_log "[$ambiente] fotos do Storage a partir do host: $dir"
+      # A conferência vem ANTES do desvio de --simular: pasta errada na configuração é
+      # justamente o que uma simulação existe para encontrar, e uma simulação que passa por
+      # cima disso diz que está tudo bem para uma rodada que falharia de noite.
+      [ -d "$dir" ] || { jm_erro "[$ambiente] ${ambiente^^}_DIR_STORAGE='$dir' não é uma pasta."; return 1; }
+      if [ "$SIMULAR" = "sim" ]; then return 0; fi
+      tar -C "$dir" -czf "${destino}.parcial" . \
+        || { rm -f "${destino}.parcial"; return 1; }
+      ;;
+    docker)
+      jm_log "[$ambiente] fotos do Storage de dentro do contêiner $container:$caminho"
+      if [ "$SIMULAR" = "sim" ]; then return 0; fi
+      docker exec -i "$container" tar -C "$caminho" -cf - . | gzip -6 > "${destino}.parcial" \
+        || { rm -f "${destino}.parcial"; return 1; }
+      ;;
+    api)
+      dump_storage_api "$ambiente" "$destino" || return 1
+      if [ "$SIMULAR" = "sim" ]; then return 0; fi
+      ;;
+    *)
+      # Falha, e não aviso. Foto perdida é trabalho do gestor perdido, e ela não está dentro
+      # do dump do banco: uma rodada sem as fotos não é um backup completo, e declarar sucesso
+      # faz a casa acreditar que está protegida. Quem quiser mesmo só o banco tem
+      # --somente-banco, que é explícito e não passa por aqui.
+      jm_erro "[$ambiente] Storage não configurado (${ambiente^^}_DIR_STORAGE, ${ambiente^^}_CONTAINER_STORAGE ou ${ambiente^^}_MODO_STORAGE=api). As fotos NÃO entraram neste backup."
+      return 1
+      ;;
+  esac
 
   mv_ou_falhar "${destino}.parcial" "$destino" "$ambiente" "as fotos do Storage" || return 1
   jm_log "[$ambiente] fotos guardadas: $(jm_tamanho "$destino")"
+}
+
+# Fotos pela API do Storage. Escreve em "${destino}.parcial"; quem chamou promove.
+dump_storage_api() {
+  local ambiente="$1" destino="$2"
+  local url bucket chave conf temporaria esperadas baixadas=0 falhou=0 nome
+
+  url="$(jm_var_ambiente "$ambiente" STORAGE_URL "")"
+  bucket="$(jm_var_ambiente "$ambiente" STORAGE_BUCKET "${STORAGE_BUCKET:-produtos}")"
+  chave="$(jm_var_ambiente "$ambiente" SERVICE_KEY "")"
+  url="${url%/}"
+
+  [ -n "$url" ]   || { jm_erro "[$ambiente] falta ${ambiente^^}_STORAGE_URL (MODO_STORAGE=api)."; return 1; }
+  [ -n "$chave" ] || { jm_erro "[$ambiente] falta ${ambiente^^}_SERVICE_KEY (MODO_STORAGE=api)."; return 1; }
+
+  jm_log "[$ambiente] fotos do Storage pela API: $url, bucket '$bucket'"
+  if [ "$SIMULAR" = "sim" ]; then return 0; fi
+
+  # A lista sai do banco, e é ela que diz quantas fotos ESPERAMOS. Sem esse número, uma
+  # rodada que baixasse metade sairia com um tar válido e menor, e ninguém veria.
+  local lista
+  lista="$(jm_storage_listar_do_banco "$ambiente" "$bucket")" \
+    || { jm_erro "[$ambiente] não consegui ler storage.objects para listar as fotos."; return 1; }
+  esperadas="$(printf '%s\n' "$lista" | grep -c . || true)"
+
+  if [ "$esperadas" -eq 0 ]; then
+    # Bucket vazio é possível (loja nova). Não é falha, mas é dito: um bucket que ESVAZIOU
+    # sem ninguém mandar esvaziar tem a mesma cara, e o número no resumo denuncia.
+    jm_aviso "[$ambiente] o bucket '$bucket' não tem nenhuma foto registrada em storage.objects."
+  fi
+
+  temporaria="$(mktemp -d -t jardim-fotos-XXXXXX)" || return 1
+  conf="$(jm_storage_conf_curl "$chave")" || { rm -rf "$temporaria"; return 1; }
+  # A chave do service_role está dentro do arquivo do curl. Ele tem de sumir em TODA saída
+  # daqui, e por isso a limpeza é explícita em cada caminho: `trap ... RETURN` não é
+  # herdado por função sem `set -o functrace`, e o que parece proteger e não protege é pior
+  # do que não ter nada.
+  limpar_api() { rm -f "$conf"; rm -rf "$temporaria"; }
+
+  while IFS= read -r nome; do
+    [ -n "$nome" ] || continue
+    if jm_storage_baixar "$url" "$bucket" "$nome" "$temporaria/$bucket/$nome" "$conf"; then
+      baixadas=$((baixadas + 1))
+    else
+      falhou=$((falhou + 1))
+    fi
+  done <<< "$lista"
+
+  if [ "$falhou" -gt 0 ]; then
+    jm_erro "[$ambiente] $falhou de $esperadas fotos NÃO baixaram. Backup de fotos incompleto não é backup: nada foi guardado."
+    limpar_api
+    return 1
+  fi
+
+  # O marcador. É o que impede um tar do modo api de ser extraído por cima de um
+  # /var/lib/storage achando que são a mesma coisa.
+  {
+    printf 'modo=api\n'
+    printf 'bucket=%s\n' "$bucket"
+    printf 'objetos=%s\n' "$baixadas"
+    printf 'origem=%s\n' "$url"
+    printf 'gerado_em=%s\n' "$(jm_agora)"
+    printf '# As entradas deste tar sao <bucket>/<caminho do objeto>, montadas a partir de\n'
+    printf '# storage.objects. NAO e uma copia da arvore de /var/lib/storage: restaure com\n'
+    printf '# restaurar.sh em MODO_STORAGE=api, que envia foto por foto pela API.\n'
+  } > "$temporaria/$MARCADOR_STORAGE"
+
+  if ! tar -C "$temporaria" -czf "${destino}.parcial" .; then
+    rm -f "${destino}.parcial"
+    limpar_api
+    return 1
+  fi
+  jm_log "[$ambiente] $baixadas de $esperadas fotos baixadas do bucket '$bucket'"
+  limpar_api
 }
 
 # Manifesto: contagem das tabelas principais no instante do dump. A restauração
@@ -520,10 +656,15 @@ for ambiente in $AMBIENTES; do
   # apagava por idade — enquanto o envio para fora, esse sim, só acontece em rodada boa.
   # Era a receita para a pasta esvaziar sozinha depois de duas semanas de falhas avisadas
   # e não atendidas.
-  if [ -z "$erro_ambiente" ]; then
-    limpar_antigos "$ambiente" "$dir_amb" || jm_aviso "[$ambiente] a limpeza dos antigos falhou."
-  else
+  if [ -n "$erro_ambiente" ]; then
     jm_log "[$ambiente] limpeza dos antigos pulada: a rodada falhou em ${erro_ambiente}, e não se apaga backup bom numa noite que não gerou backup novo."
+  elif [ "$ARMAZENAMENTO_LOCAL_EFEMERO" = "sim" ]; then
+    # Não há o que limpar: o disco inteiro some no fim do disparo. Rodar a limpeza aqui só
+    # imprimiria "apagando backups com mais de 14 dias" numa pasta que nasceu há dois
+    # minutos — linha de log que faria alguém acreditar numa retenção local que não existe.
+    jm_log "[$ambiente] sem limpeza local: o disco daqui é descartável, e o histórico mora em ${RCLONE_REMOTO}."
+  else
+    limpar_antigos "$ambiente" "$dir_amb" || jm_aviso "[$ambiente] a limpeza dos antigos falhou."
   fi
 
   if [ -n "$erro_ambiente" ]; then
@@ -565,13 +706,26 @@ if [ -f "$marca" ]; then
   [ "$idade_dias" -lt "$DIAS_ENTRE_RESUMOS" ] && enviar_resumo="nao"
 fi
 
+# Com disco descartável o marcador nunca sobrevive de uma rodada para a outra, e o "uma vez
+# por semana" vira "toda noite" sem ninguém ter escolhido isso. Não dá para consertar de
+# dentro (não há onde guardar a marca), então o que se faz é DIZER: a mensagem passa a
+# explicar por que chega todo dia, em vez de a equipe concluir sozinha que o backup
+# enlouqueceu e silenciar o canal — que é como o próximo aviso de verdade não chega.
+linha_retencao="Retenção local: ${DIAS_RETENCAO_LOCAL} dias · cópia externa: ${RCLONE_REMOTO:-NÃO CONFIGURADA}"
+linha_frequencia="Esta confirmação sai a cada ${DIAS_ENTRE_RESUMOS} dia(s)."
+if [ "$ARMAZENAMENTO_LOCAL_EFEMERO" = "sim" ]; then
+  linha_retencao="Sem retenção local: o disco daqui morre com o disparo. A cópia que existe é ${RCLONE_REMOTO:-NÃO CONFIGURADA}."
+  linha_frequencia="Esta confirmação sai em TODA rodada: sem disco, não há onde guardar a marca do último resumo."
+fi
+
 if [ "$enviar_resumo" = "sim" ]; then
   jm_telegram "$(printf '%s\n' \
     "Jardim Menu — backup em dia (${DATA_DIA})" \
     "Última rodada:${RESUMO}" \
     "" \
     "Disco do backup: ${disco_livre}" \
-    "Retenção local: ${DIAS_RETENCAO_LOCAL} dias · cópia externa: ${RCLONE_REMOTO:-NÃO CONFIGURADA}" \
+    "${linha_retencao}" \
+    "${linha_frequencia}" \
     "Lembrete do NF-011: a restauração de teste se repete antes de cada fase que migra o banco.")"
   date > "$marca"
 fi

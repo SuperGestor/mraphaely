@@ -9,6 +9,15 @@ variáveis de Telegram.
 O texto para quem vai **operar** — o que cada alerta quer dizer e o que fazer —
 está em `docs/operacao/MONITORAMENTO.md`. Aqui ficam a instalação e as opções.
 
+> **No Render** (decisão de 24/09/2026) não existe `docker ps`: a verificação de contêiner
+> deixa de existir e passa a ser do painel do Render, e o disco que importa é o do Render,
+> não o desta máquina. Use `MODO_PLATAFORMA=render` — ele faz o batimento diário **dizer por
+> escrito o que deixou de ser vigiado**, em vez de o canal repetir "monitoramento vivo"
+> enquanto a cobertura encolheu. O Storage ganhou verificação própria
+> (`/storage/v1/status`), porque ele cai sozinho e o cardápio abre sem foto. Detalhes em
+> `infra/render/OPERACAO.md`, §7; configuração no fim de
+> `exemplo/monitoramento.env.exemplo`.
+
 ## O que tem aqui
 
 | Arquivo | Para que serve |

@@ -79,7 +79,7 @@ RCLONE_CONFIG="${RCLONE_CONFIG:-/etc/jardim-menu/rclone.conf}"
 
 jm_validar_ambiente "$ORIGEM"
 jm_validar_ambiente "$ALVO"
-jm_exige_comandos awk sort date tar gzip
+jm_exige_comandos awk sort date tar gzip find curl
 
 INICIO="$(date +%s)"
 DATA_DIA="$(date '+%Y-%m-%d')"
@@ -103,6 +103,15 @@ container_alvo="$(jm_var_ambiente "$ALVO" CONTAINER_DB "")"
 if [ "$modo" = "docker" ] && [ -z "$container_alvo" ]; then
   jm_erro "Falta ${ALVO^^}_CONTAINER_DB em $ARQUIVO_CONFIG (MODO_BANCO=docker)."
   exit 2
+fi
+
+# Em MODO_BANCO=host quem restaura é o cliente instalado aqui. Conferido antes de tudo,
+# pelo mesmo motivo do backup.sh: no Render a imagem é magra e montada por nós, e descobrir
+# que falta o pg_restore DEPOIS de ter conferido o arquivo e tomado a trava é desperdício
+# de uma janela de desastre — que é exatamente quando este script é usado.
+if [ "$modo" = "host" ]; then
+  jm_exige_cliente_pg psql pg_restore pg_dump \
+    || { jm_erro "MODO_BANCO=host exige o cliente do Postgres aqui dentro."; exit 2; }
 fi
 
 # Identidade do banco que um ambiente escreve, em uma linha só, para comparar um
@@ -392,13 +401,123 @@ fi
 FOTOS_SITUACAO="nao-tentado"
 FOTOS_DETALHE=""
 
+# O tar de fotos tirado pela API (modo `api` do backup.sh) tem OUTRO formato: as entradas
+# são <bucket>/<caminho do objeto>, montadas a partir de storage.objects, e não uma cópia
+# da árvore de /var/lib/storage. Extrair um no lugar do outro põe foto em caminho errado
+# sem erro nenhum — o storage-api simplesmente não acha o arquivo depois, e o cardápio
+# aparece sem imagem dias depois, longe de qualquer registro que explique.
+#
+# Por isso o formato é lido do marcador que o backup grava na raiz do tar, e não deduzido
+# do ambiente de destino: quem manda é o arquivo que está na mão, não a configuração de
+# hoje. Sem marcador, é um tar do formato antigo (host/docker), que é o que sempre foi.
+#
+# E é de propósito que NÃO há `tar -tzf ... | grep -q` aqui. O grep -q sai no primeiro
+# acerto; se o tar ainda estiver escrevendo, ele morre de SIGPIPE e, com `set -o pipefail`,
+# o pipeline inteiro vira falha — ou seja, ENCONTRAR o marcador seria registrado como não
+# encontrar, e um backup do modo api cairia no caminho do formato antigo. O projeto já foi
+# mordido por esse padrão duas vezes (dump_banco e dump_globais, no backup.sh, com os
+# comentários lá para provar).
+#
+# Honestidade sobre o risco AQUI: num teste com 12 mil entradas as duas versões acertaram,
+# porque o marcador fica no fim da listagem e o tar termina antes de o grep sair. Ou seja,
+# não foi reproduzida falha — o que se evita é depender da ordem em que o tar lista os
+# arquivos para que a detecção funcione. Sair barato não é motivo para repetir um padrão
+# que já custou caro duas vezes: a listagem vem inteira para uma variável, e o casamento é
+# feito em cima dela.
+formato_do_tar() {
+  local arquivo="$1" listagem
+  listagem="$(tar -tzf "$arquivo" 2>/dev/null)" || { printf 'arvore'; return 0; }
+  if grep -qxF "./$MARCADOR_STORAGE" <<< "$listagem"; then
+    printf 'api'
+  else
+    printf 'arvore'
+  fi
+}
+
+# Devolve as fotos enviando uma a uma pela API do Storage. É o caminho do Render, onde não
+# existe pasta no host nem `docker exec`: o disco do serviço do Storage não é alcançável de
+# um Cron Job nem de um one-off job.
+restaurar_fotos_api() {
+  local url bucket chave conf temporaria nome enviadas=0 falhou=0 total=0
+
+  url="$(jm_var_ambiente "$ALVO" STORAGE_URL "")"
+  bucket="$(jm_var_ambiente "$ALVO" STORAGE_BUCKET "${STORAGE_BUCKET:-produtos}")"
+  chave="$(jm_var_ambiente "$ALVO" SERVICE_KEY "")"
+  url="${url%/}"
+
+  if [ -z "$url" ] || [ -z "$chave" ]; then
+    FOTOS_DETALHE="faltam ${ALVO^^}_STORAGE_URL e/ou ${ALVO^^}_SERVICE_KEY para devolver as fotos pela API"
+    return 1
+  fi
+
+  temporaria="$(mktemp -d -t jardim-restaura-fotos-XXXXXX)" || {
+    FOTOS_DETALHE="não consegui criar pasta temporária para abrir o tar das fotos"; return 1; }
+  if ! tar -C "$temporaria" -xzf "$FOTOS"; then
+    rm -rf "$temporaria"
+    FOTOS_DETALHE="o tar das fotos não abriu"
+    return 1
+  fi
+
+  conf="$(jm_storage_conf_curl "$chave")" || { rm -rf "$temporaria"; return 1; }
+  # A chave vive dentro deste arquivo: ele some em todo caminho de saída (ver o comentário
+  # gêmeo no backup.sh sobre `trap ... RETURN` não ser herdado por função).
+  limpar_api_restauracao() { rm -f "$conf"; rm -rf "$temporaria"; }
+
+  if [ "$SIMULAR" = "sim" ]; then
+    jm_log "SIMULAÇÃO: enviaria as fotos de $(basename "$FOTOS") para $url, bucket '$bucket'."
+    limpar_api_restauracao
+    FOTOS_DETALHE="simulação: nada foi enviado"
+    return 0
+  fi
+
+  jm_log "Devolvendo as fotos pela API do Storage em $url, bucket '$bucket'."
+  # Só o que está DENTRO da pasta do bucket: o marcador na raiz não é foto.
+  while IFS= read -r arquivo_local; do
+    [ -f "$arquivo_local" ] || continue
+    nome="${arquivo_local#"$temporaria/$bucket/"}"
+    total=$((total + 1))
+    if jm_storage_enviar "$url" "$bucket" "$nome" "$arquivo_local" "$conf"; then
+      enviadas=$((enviadas + 1))
+    else
+      falhou=$((falhou + 1))
+    fi
+  done < <(find "$temporaria/$bucket" -type f 2>/dev/null | sort)
+
+  limpar_api_restauracao
+
+  if [ "$total" -eq 0 ]; then
+    FOTOS_DETALHE="o tar não tinha nenhuma foto dentro de '$bucket/'"
+    return 1
+  fi
+  if [ "$falhou" -gt 0 ]; then
+    FOTOS_DETALHE="$falhou de $total fotos NÃO voltaram pela API (enviadas: $enviadas)"
+    return 1
+  fi
+  FOTOS_DETALHE="$enviadas foto(s) enviadas de volta pela API para $url, bucket '$bucket'"
+  jm_log "$FOTOS_DETALHE"
+}
+
 restaurar_fotos() {
   # Chamada em contexto de condição, o que desliga o `set -e` DENTRO dela: cada
   # comando abaixo confere o próprio status na mão.
-  local dir_alvo container_st caminho_st guardado
+  local dir_alvo container_st caminho_st guardado formato
   dir_alvo="$(jm_var_ambiente "$ALVO" DIR_STORAGE "")"
   container_st="$(jm_var_ambiente "$ALVO" CONTAINER_STORAGE "")"
   caminho_st="$(jm_var_ambiente "$ALVO" CAMINHO_STORAGE "/var/lib/storage")"
+
+  # Quem decide é o ARQUIVO, não o destino. Um tar do modo api extraído numa pasta de
+  # /var/lib/storage deixaria as fotos em caminho que o storage-api não procura, e a
+  # restauração ainda assim se declararia feita.
+  formato="$(formato_do_tar "$FOTOS")"
+  if [ "$formato" = "api" ]; then
+    jm_log "Este backup de fotos foi tirado pela API (marcador $MARCADOR_STORAGE): devolvendo pela API também."
+    restaurar_fotos_api
+    return $?
+  fi
+  if [ "$(jm_modo_storage "$ALVO")" = "api" ]; then
+    FOTOS_DETALHE="o destino '$ALVO' está em MODO_STORAGE=api, mas este tar é do formato antigo (cópia da árvore de /var/lib/storage). Extrair um no outro põe foto em caminho errado sem erro nenhum, então NÃO vou tentar adivinhar."
+    return 1
+  fi
 
   # Mesma ordem do backup.sh: a pasta no host só vale se ela existir de verdade.
   # DIR_STORAGE preenchido com caminho que não existe, havendo contêiner, é o
@@ -448,7 +567,7 @@ restaurar_fotos() {
     return 0
   fi
 
-  FOTOS_DETALHE="nem ${ALVO^^}_DIR_STORAGE nem ${ALVO^^}_CONTAINER_STORAGE estão preenchidos em $ARQUIVO_CONFIG"
+  FOTOS_DETALHE="nem ${ALVO^^}_DIR_STORAGE nem ${ALVO^^}_CONTAINER_STORAGE estão preenchidos em $ARQUIVO_CONFIG (no Render o caminho é ${ALVO^^}_MODO_STORAGE=api)"
   return 1
 }
 
@@ -462,7 +581,14 @@ elif [ ! -f "$FOTOS" ]; then
   jm_erro "Este backup não traz o arquivo de fotos: só o banco foi restaurado."
 elif restaurar_fotos; then
   FOTOS_SITUACAO="restauradas"
-  jm_aviso "Reinicie o contêiner do storage do $ALVO para ele reabrir os arquivos."
+  # Só faz sentido quando as fotos foram postas no disco por baixo do storage-api. No modo
+  # api elas entraram pelo próprio serviço, que já sabe que estão lá — mandar reiniciar ali
+  # seria pedir uma janela de indisponibilidade à toa.
+  if [ "$(formato_do_tar "$FOTOS")" = "api" ]; then
+    jm_aviso "As fotos voltaram pelo próprio storage-api: não precisa reiniciar serviço nenhum."
+  else
+    jm_aviso "Reinicie o contêiner do storage do $ALVO para ele reabrir os arquivos."
+  fi
 else
   FOTOS_SITUACAO="falhou"
   jm_erro "As fotos NÃO voltaram: $FOTOS_DETALHE"
