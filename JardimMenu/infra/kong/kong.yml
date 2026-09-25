@@ -20,6 +20,17 @@
 #   2. o bloco do CORS se repete em cada rota de proposito: ancora de YAML (<<: *x)
 #      dependeria de o parser do Kong aceitar merge key, o que nao esta documentado.
 
+# Os destinos internos são VARIÁVEIS, com o nome do compose como padrão: ${AUTH_HOST:-auth},
+# ${REST_HOST:-rest}, ${STORAGE_HOST:-storage}, ${META_HOST:-meta} e $REALTIME_HOST.
+#
+# O padrão mantém o docker-compose.yml funcionando sem mudar uma linha. A variável existe
+# porque no Render cada contêiner é um serviço com nome próprio na rede privada, e os nomes
+# `auth`, `rest` e `storage` simplesmente não resolvem lá: o Kong subiria e toda chamada à
+# API morreria em DNS, sem dizer por quê.
+#
+# Quem expande é o entrypoint (`eval echo`), tanto no compose quanto na imagem de
+# infra/render/kong. Ele é `sh`/`bash`, então ${VAR:-padrão} vale.
+
 _format_version: '2.1'
 _transform: true
 
@@ -49,8 +60,8 @@ services:
   ## de link de e-mail (convite, recuperacao), que chegam sem apikey.
   ## ---------------------------------------------------------------------------
   - name: auth-v1-open
-    _comment: 'GoTrue: /auth/v1/verify -> http://auth:9999/verify'
-    url: http://auth:9999/verify
+    _comment: 'GoTrue: /auth/v1/verify -> http://${AUTH_HOST:-auth}:9999/verify'
+    url: http://${AUTH_HOST:-auth}:9999/verify
     routes:
       - name: auth-v1-open
         strip_path: true
@@ -67,8 +78,8 @@ services:
           max_age: 3600
 
   - name: auth-v1-open-callback
-    _comment: 'GoTrue: /auth/v1/callback -> http://auth:9999/callback'
-    url: http://auth:9999/callback
+    _comment: 'GoTrue: /auth/v1/callback -> http://${AUTH_HOST:-auth}:9999/callback'
+    url: http://${AUTH_HOST:-auth}:9999/callback
     routes:
       - name: auth-v1-open-callback
         strip_path: true
@@ -85,8 +96,8 @@ services:
           max_age: 3600
 
   - name: auth-v1-open-authorize
-    _comment: 'GoTrue: /auth/v1/authorize -> http://auth:9999/authorize'
-    url: http://auth:9999/authorize
+    _comment: 'GoTrue: /auth/v1/authorize -> http://${AUTH_HOST:-auth}:9999/authorize'
+    url: http://${AUTH_HOST:-auth}:9999/authorize
     routes:
       - name: auth-v1-open-authorize
         strip_path: true
@@ -103,8 +114,8 @@ services:
           max_age: 3600
 
   - name: auth-v1
-    _comment: 'GoTrue: /auth/v1/* -> http://auth:9999/*'
-    url: http://auth:9999/
+    _comment: 'GoTrue: /auth/v1/* -> http://${AUTH_HOST:-auth}:9999/*'
+    url: http://${AUTH_HOST:-auth}:9999/
     routes:
       - name: auth-v1-all
         strip_path: true
@@ -134,8 +145,8 @@ services:
   ## unico caminho de escrita do projeto (CLAUDE.md, stack).
   ## ---------------------------------------------------------------------------
   - name: rest-v1
-    _comment: 'PostgREST: /rest/v1/* -> http://rest:3000/*'
-    url: http://rest:3000/
+    _comment: 'PostgREST: /rest/v1/* -> http://${REST_HOST:-rest}:3000/*'
+    url: http://${REST_HOST:-rest}:3000/
     routes:
       - name: rest-v1-all
         strip_path: true
@@ -225,8 +236,8 @@ services:
   ## proprio storage-api valida o JWT, e a foto de bucket publico abre sem apikey.
   ## ---------------------------------------------------------------------------
   - name: storage-v1
-    _comment: 'Storage: /storage/v1/* -> http://storage:5000/*'
-    url: http://storage:5000/
+    _comment: 'Storage: /storage/v1/* -> http://${STORAGE_HOST:-storage}:5000/*'
+    url: http://${STORAGE_HOST:-storage}:5000/
     routes:
       - name: storage-v1-all
         strip_path: true
@@ -248,8 +259,8 @@ services:
   ## disso pela internet (NF-006). Para ligar junto com o studio, descomente:
   ##
   # - name: meta
-  #   _comment: 'pg-meta: /pg/* -> http://meta:8080/*'
-  #   url: http://meta:8080/
+  #   _comment: 'pg-meta: /pg/* -> http://${META_HOST:-meta}:8080/*'
+  #   url: http://${META_HOST:-meta}:8080/
   #   routes:
   #     - name: meta-all
   #       strip_path: true

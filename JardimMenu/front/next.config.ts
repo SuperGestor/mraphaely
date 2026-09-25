@@ -49,6 +49,34 @@ const CAMINHOS_COM_SESSAO = [
   "/api/equipe/:caminho*",
 ];
 
+/**
+ * Trava contra o build verde que sobe o cardápio de exemplo.
+ *
+ * A escolha da fonte é `NEXT_PUBLIC_DATA_SOURCE === "supabase"` (lib/menu-source.ts e
+ * irmãos), e QUALQUER outro valor, inclusive ausente, cai no exemplo. Isso é bom na
+ * máquina de quem desenvolve e péssimo em publicação: no Netlify a variável mora num
+ * painel, e esquecê-la produz um build que passa, um site que abre e um cardápio com
+ * produtos que não existem — na mesa do cliente, sem nenhum erro em lugar nenhum.
+ *
+ * A regra: se há banco configurado (NEXT_PUBLIC_SUPABASE_URL), a fonte TEM de ser o banco.
+ * Ter as duas coisas em desacordo nunca é intenção, é esquecimento.
+ * A saída para quem QUER a tela de exemplo tendo um banco local no .env.local:
+ * `JM_PERMITIR_EXEMPLO_COM_BANCO=sim`. É nomeada de propósito — o acidente é silencioso, e
+ * a escolha deliberada tem de ser escrita.
+ */
+if (
+  process.env.NEXT_PUBLIC_SUPABASE_URL &&
+  process.env.NEXT_PUBLIC_DATA_SOURCE !== "supabase" &&
+  process.env.JM_PERMITIR_EXEMPLO_COM_BANCO !== "sim"
+) {
+  throw new Error(
+    "NEXT_PUBLIC_SUPABASE_URL está definida, mas NEXT_PUBLIC_DATA_SOURCE não é supabase: " +
+      "este build subiria o cardápio de EXEMPLO apontando para um banco de verdade. " +
+      "Defina NEXT_PUBLIC_DATA_SOURCE=supabase; ou, para a tela de exemplo com um banco local, " +
+      "JM_PERMITIR_EXEMPLO_COM_BANCO=sim.",
+  );
+}
+
 const nextConfig: NextConfig = {
   reactStrictMode: true,
   env: { NEXT_PUBLIC_APP_VERSION: versaoDoApp },
