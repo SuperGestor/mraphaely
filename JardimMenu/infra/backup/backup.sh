@@ -600,9 +600,14 @@ for ambiente in $AMBIENTES; do
   jm_log "=== [$ambiente] início da rodada de ${DATA_DIA} ==="
   erro_ambiente=""
   gerados=()
+  # O dump do banco tem bandeira própria porque ele decide sozinho se a rodada tem algo que
+  # valha a pena guardar fora do servidor. O resto (papéis, fotos, manifesto) pode falhar
+  # sem que o dump deixe de ser o backup da noite.
+  banco_ok=nao
 
   if dump_banco "$ambiente" "$arq_dump"; then
     gerados+=("$arq_dump")
+    banco_ok=sim
   else
     erro_ambiente="pg_dump"
   fi
@@ -633,7 +638,11 @@ for ambiente in $AMBIENTES; do
 
   # Soma de verificação: é com ela que se descobre, meses depois, que o arquivo
   # mudou entre o servidor e o destino externo.
-  if [ -z "$erro_ambiente" ] && [ "$SIMULAR" = "nao" ] && [ "${#gerados[@]}" -gt 0 ]; then
+  # Repare: NÃO depende de erro_ambiente. Antes dependia, e o efeito era este: uma única
+  # foto que não baixasse marcava a rodada como falha e, com isso, o dump do banco — que
+  # tinha dado certo — não ganhava soma nem saía do servidor. No Render, onde o disco é
+  # efêmero, isso quer dizer perder o backup da noite inteira por causa de um 404 numa foto.
+  if [ "$banco_ok" = "sim" ] && [ "$SIMULAR" = "nao" ] && [ "${#gerados[@]}" -gt 0 ]; then
     nomes=()
     for arquivo_gerado in "${gerados[@]}"; do
       nomes+=("$(basename "$arquivo_gerado")")
@@ -645,9 +654,12 @@ for ambiente in $AMBIENTES; do
     fi
   fi
 
-  if [ -z "$erro_ambiente" ]; then
+  # Mesmo motivo: o que deu certo VAI para fora, mesmo que a rodada seja reportada como
+  # falha. A falha continua chegando no Telegram; o que não pode é ela levar junto o único
+  # backup do banco que existe.
+  if [ "$banco_ok" = "sim" ]; then
     if ! enviar_para_fora "$ambiente" "${gerados[@]}"; then
-      erro_ambiente="cópia para fora do servidor"
+      erro_ambiente="${erro_ambiente:+$erro_ambiente e }cópia para fora do servidor"
     fi
   fi
 

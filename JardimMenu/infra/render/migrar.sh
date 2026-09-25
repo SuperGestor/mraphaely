@@ -59,6 +59,10 @@
 #
 # Opções:
 #   --config <arquivo>   configuração fora do ambiente (padrão: $JARDIM_MIGRAR_ENV)
+#
+# Variável BACKUP_ENV: caminho da configuração do backup.sh, repassada a ele no passo do
+# backup obrigatório. Sem ela vale o que estiver no ambiente (JARDIM_BACKUP_ENV), que é o
+# caminho normal no Render.
 #   --migracoes <dir>    pasta das migrações (padrão: <repo>/back/supabase/migrations)
 #   --listar             só mostra o que falta e sai, sem tocar em nada
 #   --sem-backup         pula o backup de produção. Só com --sim, e fica no registro
@@ -504,8 +508,23 @@ if [ "$EH_PRODUCAO" = "sim" ]; then
        ou assuma a responsabilidade com --sem-backup --sim."
     # --somente-banco de propósito: o que a migração pode estragar é o banco. As fotos
     # ficam para a rodada diária, que é onde elas já são tratadas.
-    bash "$BACKUP_SH" --ambiente "$AMBIENTE" --somente-banco \
-      || morrer "o backup falhou, e produção não migra sem backup (NF-011)."
+    #
+    # A CONFIGURAÇÃO PRECISA SER REPASSADA. O backup.sh lê, sem opção de pular,
+    # ${JARDIM_BACKUP_ENV:-/etc/jardim-menu/backup.env}. No Render esse caminho não existe:
+    # cada disparo é um contêiner novo, e a configuração chega por variável de ambiente.
+    # Sem repassar, o backup obrigatório do NF-011 falha SEMPRE em produção, e a migração
+    # nunca acontece — ou pior, alguém desliga a trava para conseguir migrar.
+    #
+    # BACKUP_ENV existe para apontar um arquivo próprio; sem ele, vale o que o ambiente já
+    # tiver, que é o caminho normal no Render.
+    if [ -n "${BACKUP_ENV:-}" ]; then
+      [ -r "$BACKUP_ENV" ] || morrer "não consigo ler BACKUP_ENV=$BACKUP_ENV"
+      bash "$BACKUP_SH" --config "$BACKUP_ENV" --ambiente "$AMBIENTE" --somente-banco \
+        || morrer "o backup falhou, e produção não migra sem backup (NF-011)."
+    else
+      bash "$BACKUP_SH" --ambiente "$AMBIENTE" --somente-banco \
+        || morrer "o backup falhou, e produção não migra sem backup (NF-011)."
+    fi
     BACKUP_FEITO=sim
     feito "backup do banco guardado antes de migrar"
   fi
